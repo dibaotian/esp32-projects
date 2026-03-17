@@ -347,6 +347,32 @@ def answer_unknown():
 | `sad_show.py` | 15s melancholy show with fading heartbeat | `python3 ~/Documents/esp32/sad_show.py` |
 | `cpu_monitor.py` | CPU gauge: servo pointer + LCD bar + color alerts | `python3 ~/Documents/esp32/cpu_monitor.py [seconds]` |
 | `play_game.sh` | Interactive Q&A game shell script | `bash ~/Documents/esp32/play_game.sh` |
+| `esp32_mcp_server.py` | MCP Server for AI Agent control | `python3 ~/Documents/esp32/esp32_mcp_server.py` |
+
+## MCP Server (AI Agent 接口)
+
+ESP32 MCP Server 将硬件控制封装为标准 MCP 工具，供 AI Agent 直接调用。
+
+### 启动方式
+
+已配置在 `.vscode/mcp.json` 中，VS Code / Copilot 会自动启动。也可手动运行:
+
+```bash
+python3 ~/Documents/esp32/esp32_mcp_server.py
+```
+
+### 可用工具 (18 个)
+
+**原子工具**: `servo_set`, `servo_smooth`, `servo_get`, `servo_sweep`,
+`buzzer_beep`, `buzzer_tone`, `buzzer_melody`,
+`display_number`, `display_text`, `display_clear`,
+`lcd_print`, `lcd_rgb`, `lcd_clear`, `send_raw_json`
+
+**语义工具**: `express(emotion)` (happy/sad/yes/no/thinking/alert/celebrate),
+`gauge(value)` (物理仪表盘), `reset_hardware()`, `get_status()`
+
+详细文档: [MCP_SERVER.md](~/Documents/esp32/MCP_SERVER.md)
+
 ## Hardware Specs
 
 | Component | GPIO | Details |
