@@ -345,6 +345,7 @@ def answer_unknown():
 |--------|-------------|-------------|
 | `happy_show.py` | 15s happy expression with all peripherals | `python3 ~/Documents/esp32/happy_show.py` |
 | `sad_show.py` | 15s melancholy show with fading heartbeat | `python3 ~/Documents/esp32/sad_show.py` |
+| `cpu_monitor.py` | CPU gauge: servo pointer + LCD bar + color alerts | `python3 ~/Documents/esp32/cpu_monitor.py [seconds]` |
 | `play_game.sh` | Interactive Q&A game shell script | `bash ~/Documents/esp32/play_game.sh` |
 ## Hardware Specs
 
