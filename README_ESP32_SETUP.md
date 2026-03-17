@@ -199,14 +199,25 @@ sudo python3 -m esptool --chip esp32 -p /dev/ttyUSB0 -b 460800 \
 
 ---
 
-## 5. 项目二：WiFi AP + TCP 回声服务器 (wifi_echo)
+## 5. 项目二：WiFi AP + TCP JSON 控制服务器 (wifi_echo)
 
 ### 功能
 
 - ESP32 创建 WiFi 热点 (SSID: `ESP32-Control`, 密码: `esp32ctrl`)
 - 启动 TCP 服务器监听端口 3333
-- 接收消息回复 `收到: <原始消息>`
+- **JSON 协议**远程控制 5 个模块: 蜂鸣器、舵机、数码管、LCD、系统
 - 支持多客户端并发连接 (最多 4 个)
+
+### 硬件外设
+
+| 组件 | GPIO | 说明 |
+|------|------|------|
+| 无源蜂鸣器 | 25 | LEDC PWM, 串联 100Ω |
+| 舵机 (180°) | 27 | LEDC PWM 50Hz, 500~2500μs |
+| TM1637 数码管 CLK | 16 | 四位七段数码管时钟线 |
+| TM1637 数码管 DIO | 17 | 四位七段数码管数据线 (需 5V VCC) |
+| Grove LCD SDA | 18 | I2C, 16x2 字符 LCD + RGB 背光 |
+| Grove LCD SCL | 23 | I2C 时钟线 |
 
 ### 项目结构
 
@@ -214,14 +225,39 @@ sudo python3 -m esptool --chip esp32 -p /dev/ttyUSB0 -b 460800 \
 wifi_echo/
 ├── CMakeLists.txt          # 顶层 CMake 配置
 ├── sdkconfig.defaults      # WiFi AP 配置
+├── PROTOCOL.md             # 完整 JSON 通信协议文档
 ├── build_flash.sh          # 一键编译烧录脚本
 ├── monitor.sh              # 串口监控脚本
 ├── run.sh                  # 运行脚本 (连WiFi + 启动客户端)
 ├── stop.sh                 # 停止脚本 (断开WiFi + 清理路由)
-└── main/
-    ├── CMakeLists.txt      # 组件 CMake 配置
-    └── main.c              # 主程序 (WiFi AP + TCP 服务器)
+├── wifi_client.py          # 交互式 TCP 客户端 (JSON + 快捷命令)
+├── main/
+│   ├── CMakeLists.txt
+│   └── main.c              # 主程序 (WiFi AP + TCP 服务器 + JSON 分发)
+└── components/
+    ├── buzzer/              # 蜂鸣器驱动 (LEDC PWM)
+    ├── servo/               # 舵机驱动 (LEDC PWM 50Hz)
+    ├── tm1637/              # TM1637 四位七段数码管驱动
+    ├── grove_lcd/           # Grove LCD RGB 16x2 驱动 (I2C)
+    └── cmd_handler/         # JSON 命令解析与模块分发
+        ├── cmd_handler.c    # 核心分发器
+        ├── cmd_buzzer.c     # 蜂鸣器命令
+        ├── cmd_servo.c      # 舵机命令
+        ├── cmd_display.c    # 数码管命令
+        └── cmd_lcd.c        # LCD 命令
 ```
+
+### JSON 协议示例
+
+```json
+{"cmd":"servo","act":"set","angle":90}
+{"cmd":"buzzer","act":"beep","count":3}
+{"cmd":"display","act":"number","value":1234}
+{"cmd":"lcd","act":"print","row":0,"text":"Hello"}
+{"cmd":"lcd","act":"rgb","r":0,"g":0,"b":255}
+```
+
+详细协议见 [wifi_echo/PROTOCOL.md](wifi_echo/PROTOCOL.md)，README 见 [wifi_echo/README.md](wifi_echo/README.md)。
 
 ### 快速使用
 
@@ -234,11 +270,17 @@ cd ~/Documents/esp32/wifi_echo
 # 监控串口输出 (查看 ESP32 日志, Ctrl+] 退出)
 ./monitor.sh
 
-# 运行 (自动连 WiFi + 启动客户端)
-./run.sh
+# 配置双网络 (有线上网 + WiFi 控 ESP32)
+bash ~/Documents/esp32/setup_dual_network.sh
 
-# 停止 (断开 WiFi, 清理路由)
-./stop.sh
+# 运行交互式客户端
+python3 wifi_client.py
+
+# 快捷命令示例
+# >> servo 90
+# >> beep 3
+# >> lcd Hello
+# >> rgb 0 0 255
 ```
 
 ### 脚本说明
@@ -249,6 +291,7 @@ cd ~/Documents/esp32/wifi_echo
 | `monitor.sh` | 串口监控 ESP32 日志 | `[PORT]` 默认 /dev/ttyUSB0 |
 | `run.sh` | 连接 WiFi + 验证 + 启动客户端 | 无 |
 | `stop.sh` | 断开 WiFi + 清理路由 | 无 |
+| `wifi_client.py` | 交互式 TCP 客户端 | `[IP] [PORT]` |
 
 ### WiFi AP 参数
 
@@ -271,9 +314,9 @@ cd ~/Documents/esp32/wifi_echo
 
 idf.py set-target esp32
 idf.py build
-sudo python3 -m esptool --chip esp32 -p /dev/ttyUSB0 -b 460800 \
+~/.local/bin/esptool.py --chip esp32 -p /dev/ttyUSB0 -b 460800 \
     --before default_reset --after hard_reset write_flash \
-    --flash_mode dio --flash_size 2MB --flash_freq 40m \
+    --flash_mode dio --flash_size 4MB --flash_freq 40m \
     0x1000 build/bootloader/bootloader.bin \
     0x8000 build/partition_table/partition-table.bin \
     0x10000 build/wifi_echo.bin
@@ -282,14 +325,20 @@ sudo python3 -m esptool --chip esp32 -p /dev/ttyUSB0 -b 460800 \
 ### 启动后串口日志
 
 ```
-I WIFI_ECHO: === ESP32 WiFi 控制服务器 ===
-I WIFI_ECHO: WiFi AP 已启动
-I WIFI_ECHO:   SSID:     ESP32-Control
-I WIFI_ECHO:   密码:     esp32ctrl
-I WIFI_ECHO:   频道:     6
-I WIFI_ECHO:   IP:       192.168.4.1
-I WIFI_ECHO:   TCP 端口: 3333
-I WIFI_ECHO: TCP 服务器已启动, 监听端口 3333
+I WIFI_CTRL: === ESP32 WiFi 控制服务器 ===
+I BUZZER: 蜂鸣器初始化完成 (GPIO 25)
+I SERVO: 舵机初始化完成 (GPIO 27, 500~2500μs, 0~180°)
+I WIFI_CTRL: 数码管已就绪
+I GROVE_LCD: Grove LCD RGB 初始化完成 (SDA=18, SCL=23, I2C0)
+I WIFI_CTRL: Grove LCD 已就绪
+I WIFI_CTRL: WiFi AP 已启动
+I WIFI_CTRL:   SSID:     ESP32-Control
+I WIFI_CTRL:   密码:     esp32ctrl
+I WIFI_CTRL:   频道:     6
+I WIFI_CTRL:   IP:       192.168.4.1
+I WIFI_CTRL:   TCP 端口: 3333
+I WIFI_CTRL: TCP 服务器已启动, 监听端口 3333
+I WIFI_CTRL: 设备已就绪
 ```
 
 ### 工作流程
