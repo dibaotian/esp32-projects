@@ -281,16 +281,167 @@ void app_main(void)
     tm1637_config_t tm_cfg = TM1637_CONFIG_DEFAULT();
     tm_cfg.brightness = 7;
     tm1637_init(&tm_cfg, &g_tm1637);
-    tm1637_show_string(g_tm1637, "8888");
-    ESP_LOGI(TAG, "数码管已就绪");
+
+    /* 开机彩蛋: 数码管 + LCD 同步炫彩动画 (~10秒) */
 
     /* 初始化 Grove LCD RGB */
     grove_lcd_config_t lcd_cfg = GROVE_LCD_CONFIG_DEFAULT();
     grove_lcd_init(&lcd_cfg, &g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 0, 255);  /* 蓝色背光 */
-    grove_lcd_print(g_lcd, "Hi Min I'm ready");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "Feed me voltage!");
+
+    /* --- 数码管动画任务 (后台运行) --- */
+    static volatile bool tm_anim_done = false;
+    void tm_anim_task(void *arg) {
+        /* 阶段1: 数据流脉冲 (×5轮, ~2.7s) */
+        const uint8_t pulse_frames[][4] = {
+            {0x40, 0x00, 0x00, 0x00},
+            {0x40, 0x40, 0x00, 0x00},
+            {0x49, 0x40, 0x40, 0x00},
+            {0x00, 0x49, 0x40, 0x40},
+            {0x00, 0x00, 0x49, 0x40},
+            {0x00, 0x00, 0x00, 0x49},
+            {0x00, 0x00, 0x00, 0x00},
+        };
+        for (int r = 0; r < 5; r++) {
+            for (int f = 0; f < 7; f++) {
+                tm1637_show_raw(g_tm1637, pulse_frames[f]);
+                vTaskDelay(pdMS_TO_TICKS(55));
+            }
+        }
+
+        /* 阶段2: 黑客帝国解码 (~3s) */
+        const char *hex = "0123456789AbCdEF";
+        char buf[5] = "    ";
+        uint32_t seed = (uint32_t)(xTaskGetTickCount());
+        for (int i = 0; i < 30; i++) {
+            seed = seed * 1103515245 + 12345;
+            for (int d = 0; d < 4; d++)
+                buf[d] = hex[(seed >> (d * 4)) & 0x0F];
+            tm1637_show_string(g_tm1637, buf);
+            vTaskDelay(pdMS_TO_TICKS(50 + i * 3));
+        }
+
+        /* 阶段3: 逐位锁定 9527 (~2.5s) */
+        const char target[] = "9527";
+        for (int lock = 0; lock < 4; lock++) {
+            buf[lock] = target[lock];
+            for (int i = 0; i < 6; i++) {
+                seed = seed * 1103515245 + 12345;
+                for (int d = lock + 1; d < 4; d++)
+                    buf[d] = hex[(seed >> (d * 3)) & 0x0F];
+                tm1637_show_string(g_tm1637, buf);
+                vTaskDelay(pdMS_TO_TICKS(60 + lock * 25));
+            }
+        }
+
+        /* 阶段4: 呼吸觉醒 (~1.8s) */
+        tm1637_show_string(g_tm1637, "9527");
+        for (int b = 0; b <= 7; b++) {
+            tm1637_set_brightness(g_tm1637, b);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        /* 闪烁两下强化 */
+        for (int i = 0; i < 2; i++) {
+            tm1637_set_brightness(g_tm1637, 0);
+            vTaskDelay(pdMS_TO_TICKS(120));
+            tm1637_set_brightness(g_tm1637, 7);
+            vTaskDelay(pdMS_TO_TICKS(120));
+        }
+
+        tm_anim_done = true;
+        vTaskDelete(NULL);
+    }
+
+    /* --- 舵机动画任务 (后台运行) --- */
+    static volatile bool servo_anim_done = false;
+    void servo_anim_task(void *arg) {
+        /* 阶段1: 雷达扫描 — 从0°慢扫到180° (~2.5s) */
+        servo_smooth_move(g_servo, 0, 80);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        servo_smooth_move(g_servo, 180, 60);
+        vTaskDelay(pdMS_TO_TICKS(300));
+
+        /* 阶段2: 快速左右探测 — 像在搜索信号 (~3s) */
+        const float scan[] = {30, 150, 60, 120, 45, 135, 80, 100};
+        for (int i = 0; i < 8; i++) {
+            servo_set_angle(g_servo, scan[i]);
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+
+        /* 阶段3: 兴奋抖动 — 找到了! (~2s) */
+        servo_set_angle(g_servo, 90);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        for (int i = 0; i < 6; i++) {
+            servo_set_angle(g_servo, 90 + (i % 2 ? 15 : -15));
+            vTaskDelay(pdMS_TO_TICKS(120));
+        }
+
+        /* 阶段4: 优雅归位 — 慢速回到90°就绪位 (~2s) */
+        servo_smooth_move(g_servo, 90, 30);
+
+        servo_anim_done = true;
+        vTaskDelete(NULL);
+    }
+
+    tm_anim_done = false;
+    servo_anim_done = false;
+    xTaskCreate(tm_anim_task, "tm_anim", 2048, NULL, 3, NULL);
+    xTaskCreate(servo_anim_task, "sv_anim", 2048, NULL, 3, NULL);
+
+    /* --- LCD 动画 (主线程, 与数码管并行) --- */
+    {
+        /* 阶段1: RGB 彩虹扫描 + "Booting..." (~2.4s) */
+        const uint8_t rainbow[][3] = {
+            {255,0,0}, {255,80,0}, {255,200,0}, {200,255,0},
+            {0,255,0}, {0,255,150}, {0,200,255}, {0,100,255},
+            {0,0,255}, {80,0,255}, {200,0,255}, {255,0,200},
+        };
+        grove_lcd_clear(g_lcd);
+        grove_lcd_set_cursor(g_lcd, 2, 0);
+        grove_lcd_print(g_lcd, "Booting...");
+        grove_lcd_set_cursor(g_lcd, 1, 1);
+        grove_lcd_print(g_lcd, "== ESP32  AI ==");
+        for (int i = 0; i < 12; i++) {
+            grove_lcd_set_rgb(g_lcd, rainbow[i][0], rainbow[i][1], rainbow[i][2]);
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        /* 阶段2: 清屏 + 逐字打字机 第一行 (~3.2s) */
+        grove_lcd_clear(g_lcd);
+        grove_lcd_set_rgb(g_lcd, 0, 255, 80);
+        grove_lcd_blink_on(g_lcd);
+        const char *line1 = "Hi Min I'm ready";
+        for (int i = 0; line1[i]; i++) {
+            grove_lcd_set_cursor(g_lcd, i, 0);
+            grove_lcd_write_char(g_lcd, line1[i]);
+            vTaskDelay(pdMS_TO_TICKS(120));
+            /* 背光微妙脉动 */
+            uint8_t pulse = (uint8_t)(200 + 55 * ((i % 3 == 0) ? 1 : 0));
+            grove_lcd_set_rgb(g_lcd, 0, pulse, 80);
+        }
+        vTaskDelay(pdMS_TO_TICKS(300));
+
+        /* 阶段3: 逐字打字机 第二行 + 渐变到蓝色 (~3.4s) */
+        const char *line2 = "Feed me token!";
+        int len2 = 14;
+        for (int i = 0; line2[i]; i++) {
+            grove_lcd_set_cursor(g_lcd, i, 1);
+            grove_lcd_write_char(g_lcd, line2[i]);
+            /* 从绿渐变到蓝 */
+            uint8_t r = 0;
+            uint8_t g = (uint8_t)(255 - (i * 255 / len2));
+            uint8_t b = (uint8_t)(80 + (i * 175 / len2));
+            grove_lcd_set_rgb(g_lcd, r, g, b);
+            vTaskDelay(pdMS_TO_TICKS(140));
+        }
+        grove_lcd_blink_off(g_lcd);
+
+        /* 阶段4: 最终蓝色, 等数码管和舵机动画都结束 */
+        grove_lcd_set_rgb(g_lcd, 0, 0, 255);
+        while (!tm_anim_done || !servo_anim_done) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+    ESP_LOGI(TAG, "数码管已就绪");
     ESP_LOGI(TAG, "Grove LCD 已就绪");
 
     /* 启动 WiFi AP */

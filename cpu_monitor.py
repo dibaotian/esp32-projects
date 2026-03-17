@@ -129,7 +129,7 @@ except KeyboardInterrupt:
 cmd({"cmd": "servo", "act": "smooth", "angle": 90, "speed": 60})
 cmd({"cmd": "lcd", "act": "rgb", "r": 0, "g": 0, "b": 255})
 cmd({"cmd": "lcd", "act": "print", "row": 0, "text": "Hi Min I'm ready"})
-cmd({"cmd": "lcd", "act": "print", "row": 1, "text": "Feed me voltage!"})
+cmd({"cmd": "lcd", "act": "print", "row": 1, "text": "Feed me token!"})
 cmd({"cmd": "display", "act": "text", "value": "8888"})
 
 sock.close()

@@ -126,7 +126,7 @@ ESP32 作为 WiFi AP + TCP 服务器，通过 **JSON 协议** 远程控制 5 个
 
 开机后 LCD 自动显示 (蓝色背光):
 - 第一行: `Hi Min I'm ready`
-- 第二行: `Feed me voltage!`
+- 第二行: `Feed me token!`
 
 ## 文件结构
 
