@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 # ============================================================
 # WiFi Echo 项目 - 停止 (断开 ESP32 WiFi 连接)
 # 用法: ./stop.sh

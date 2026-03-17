@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * 无源蜂鸣器驱动库 (基于 LEDC PWM)
  * GPIO: 25 (默认)
  */

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 """
 ESP32 WiFi 控制客户端 (JSON 协议)
 

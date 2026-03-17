@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 """ESP32 Sad Expression - 15 second melancholy show"""
 
 import socket, json, time

@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * Grove LCD RGB Backlight 驱动 (ESP-IDF)
  *
  * I2C 双地址:

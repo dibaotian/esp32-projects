@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 # ============================================================
 # ESP32 开发环境一键安装脚本
 # 系统: Ubuntu 24.04 LTS

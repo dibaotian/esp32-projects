@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 # ============================================================
 # WiFi Echo 项目 - 串口监控 ESP32 输出
 # 用法: ./monitor.sh [PORT]

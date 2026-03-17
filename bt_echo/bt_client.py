@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 """
 Ubuntu 蓝牙客户端 - 连接 ESP32-Echo 蓝牙回声服务器
 使用方法:

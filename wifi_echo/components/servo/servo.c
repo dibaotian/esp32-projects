@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * 舵机驱动实现 (基于 LEDC PWM, 50Hz)
  *
  * LEDC 配置:

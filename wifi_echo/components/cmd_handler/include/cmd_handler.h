@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * JSON 命令分发器 — 模块级静态分发, 零动态分配
  *
  * 协议格式:

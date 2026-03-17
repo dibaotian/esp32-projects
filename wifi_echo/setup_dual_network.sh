@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 # ============================================================
 # 双网络配置脚本
 # 有线网 (eth) -> Internet (默认路由)

@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * TM1637 四位七段数码管驱动实现
  *
  * TM1637 使用类 I2C 的两线通信协议:

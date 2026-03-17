@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * TM1637 四位七段数码管驱动 (ESP-IDF)
  *
  * 两线协议 (CLK + DIO), 类似 I2C 但非标准

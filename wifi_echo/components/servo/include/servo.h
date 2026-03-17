@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * 舵机驱动库 (基于 LEDC PWM)
  * 支持多路舵机独立控制
  * 默认 GPIO: 27

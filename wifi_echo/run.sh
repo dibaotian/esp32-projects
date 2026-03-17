@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 # ============================================================
 # WiFi Echo 项目 - 运行 (连接 ESP32 WiFi + 启动客户端)
 # 用法: ./run.sh

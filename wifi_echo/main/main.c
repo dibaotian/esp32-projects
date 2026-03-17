@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * ESP32 WiFi AP + TCP JSON 控制服务器
  * 功能:
  *   - ESP32 创建 WiFi 热点 (SSID: ESP32-Control, 密码: esp32ctrl)

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 minxie <laba22@163.com>
+# All rights reserved.
+
 """ESP32 Happy Expression - 15 second show using all peripherals"""
 
 import socket, json, time

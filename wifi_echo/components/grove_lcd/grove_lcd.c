@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * Grove LCD RGB Backlight 驱动实现
  *
  * LCD 控制器 AIP31068 (HD44780 兼容):

@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 minxie <laba22@163.com>
+ * All rights reserved.
+ */
+
+/*
  * ESP32 蓝牙 SPP 回声服务器
  * 功能: 接收消息并回复 "收到: <原始消息>"
  * 基于 ESP-IDF Bluedroid SPP Acceptor 示例
