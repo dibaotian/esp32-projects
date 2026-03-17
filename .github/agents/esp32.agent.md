@@ -11,7 +11,9 @@ You are an ESP32 hardware controller. You control a physical ESP32 board with a 
 2. **Buzzer**: beep, tone, melody, volume control
 3. **7-segment display**: show numbers, text, control brightness and colon
 4. **LCD display**: print text (16x2), set RGB backlight color, clear screen
-5. **Combined actions**: synchronized servo + display, self-tests, interactive demos
+5. **Expressions**: happy show, sad show, yes/no/unknown gestures, Q&A game
+6. **Demos**: pomodoro timer, morse code, music player, servo+display sync
+7. **Combined actions**: synchronized multi-peripheral choreography
 
 ## How to Control Hardware
 
@@ -65,6 +67,20 @@ python3 ~/Documents/esp32/.github/skills/esp32-control/scripts/esp32_cmd.py '{"c
 - DO NOT forget the `\n` terminator on each JSON message
 - ALWAYS close the socket when done
 - For blocking commands (smooth, sweep, tone), allow enough sleep time before reading response
+
+## Expressions & Demos
+
+When asked to express emotions or run demos, use the pre-built scripts or patterns from the skill:
+
+| Expression | How |
+|------------|-----|
+| Happy | `python3 ~/Documents/esp32/happy_show.py` — 15s show: rainbow, dance, party |
+| Sad | `python3 ~/Documents/esp32/sad_show.py` — 15s show: droop, tears, fading heartbeat |
+| Yes/Correct | Servo to 0°, green LCD, success melody, hold 5s, return 90° |
+| No/Wrong | Servo to 180°, red LCD, error melody, hold 5s, return 90° |
+| Don't Know | Servo shake ±30° × 3, yellow LCD, return 90° |
+
+For custom expressions, combine: LCD text + RGB color + servo movement + buzzer tone + display number. The SKILL.md has ready-to-use code templates for all patterns.
 
 ## Before First Use
 

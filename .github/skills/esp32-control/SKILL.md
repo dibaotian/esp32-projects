@@ -145,6 +145,207 @@ cmd({"cmd": "servo", "act": "smooth", "angle": 90, "speed": 60})  # Return
 ### Blocking commands
 `smooth`, `sweep`, and `tone` are blocking — they complete before responding. Allow enough `time.sleep()` or use a longer `sock.settimeout()`.
 
+## Expression Patterns
+
+The ESP32 can express emotions and perform demos using all peripherals together. Use these patterns when asked to show feelings, play games, or run demos.
+
+### Express: Happy (15s show)
+```python
+# Phase 1: Wake up greeting
+cmd({"cmd":"lcd","act":"rgb","r":0,"g":255,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  I am HAPPY!"})
+cmd({"cmd":"lcd","act":"print","row":1,"text":"   \\(^o^)/"})
+cmd({"cmd":"display","act":"text","value":"-HI-"})
+cmd({"cmd":"buzzer","act":"melody","name":"startup"})
+# Quick tail-wag shake
+for _ in range(4):
+    cmd({"cmd":"servo","act":"set","angle":60}); time.sleep(0.15)
+    cmd({"cmd":"servo","act":"set","angle":120}); time.sleep(0.15)
+cmd({"cmd":"servo","act":"set","angle":90})
+
+# Phase 2: Rainbow colors + ascending notes
+colors = [(255,0,0),(255,128,0),(255,255,0),(0,255,0),(0,255,255),(0,0,255),(128,0,255)]
+notes = [523, 587, 659, 698, 784, 880, 988]
+for i,(r,g,b) in enumerate(colors):
+    cmd({"cmd":"lcd","act":"rgb","r":r,"g":g,"b":b})
+    cmd({"cmd":"servo","act":"set","angle": 45 + i*20})
+    cmd({"cmd":"buzzer","act":"tone","freq":notes[i],"ms":200})
+    time.sleep(0.35)
+
+# Phase 3: Party mode - fast color flash + shake
+party = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),(0,255,255)]
+for i in range(12):
+    r,g,b = party[i % len(party)]
+    cmd({"cmd":"lcd","act":"rgb","r":r,"g":g,"b":b})
+    cmd({"cmd":"servo","act":"set","angle": 60 if i%2==0 else 120})
+    cmd({"cmd":"buzzer","act":"tone","freq":800+(i%3)*200,"ms":80})
+    time.sleep(0.2)
+
+# Finale
+cmd({"cmd":"servo","act":"set","angle":90})
+cmd({"cmd":"lcd","act":"rgb","r":0,"g":255,"b":128})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  Thank You!"})
+cmd({"cmd":"display","act":"text","value":"LOVE"})
+cmd({"cmd":"buzzer","act":"melody","name":"success"})
+```
+Full script: `~/Documents/esp32/happy_show.py`
+
+### Express: Sad (15s show)
+```python
+# Phase 1: Droop head slowly
+cmd({"cmd":"lcd","act":"rgb","r":0,"g":0,"b":40})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  I feel sad..."})
+cmd({"cmd":"lcd","act":"print","row":1,"text":"    (T_T)"})
+for angle in range(90, 19, -2):
+    cmd({"cmd":"servo","act":"set","angle":angle}); time.sleep(0.05)
+# Descending sigh tones
+for freq, ms in [(600,300),(400,400),(250,600)]:
+    cmd({"cmd":"buzzer","act":"tone","freq":freq,"ms":ms}); time.sleep(ms/1000+0.2)
+
+# Phase 2: Struggle to lift head, give up 3 times
+for attempt in range(3):
+    for a in range(20, 50, 3):
+        cmd({"cmd":"servo","act":"set","angle":a}); time.sleep(0.03)
+    for a in range(50, max(15-attempt*5, 0), -2):
+        cmd({"cmd":"servo","act":"set","angle":a}); time.sleep(0.03)
+    cmd({"cmd":"buzzer","act":"tone","freq":300-attempt*50,"ms":500}); time.sleep(0.6)
+
+# Phase 3: Fading heartbeat
+cmd({"cmd":"lcd","act":"rgb","r":50,"g":0,"b":0})
+cmd({"cmd":"servo","act":"set","angle":0})
+for freq, ms, gap in [(400,120,0.5),(380,100,0.7),(350,80,0.9),(300,60,1.2)]:
+    cmd({"cmd":"buzzer","act":"tone","freq":freq,"ms":ms})
+    cmd({"cmd":"lcd","act":"rgb","r":80,"g":0,"b":0}); time.sleep(0.1)
+    cmd({"cmd":"lcd","act":"rgb","r":20,"g":0,"b":0}); time.sleep(gap)
+
+# Tiny hope at the end
+cmd({"cmd":"lcd","act":"print","row":0,"text":" tomorrow... ?"})
+for a in range(0, 45, 2):
+    cmd({"cmd":"servo","act":"set","angle":a}); time.sleep(0.04)
+cmd({"cmd":"buzzer","act":"tone","freq":523,"ms":800})
+```
+Full script: `~/Documents/esp32/sad_show.py`
+
+### Express: Yes / Correct (servo nod)
+```python
+cmd({"cmd":"lcd","act":"rgb","r":0,"g":255,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  Correct!"})
+cmd({"cmd":"buzzer","act":"melody","name":"success"})
+cmd({"cmd":"servo","act":"smooth","angle":0,"speed":60})
+time.sleep(5)
+cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+```
+
+### Express: No / Wrong (servo turn away)
+```python
+cmd({"cmd":"lcd","act":"rgb","r":255,"g":0,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"    Wrong!"})
+cmd({"cmd":"buzzer","act":"melody","name":"error"})
+cmd({"cmd":"servo","act":"smooth","angle":180,"speed":60})
+time.sleep(5)
+cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+```
+
+### Express: Don't Know (servo shake)
+```python
+cmd({"cmd":"lcd","act":"rgb","r":255,"g":255,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":" I dont know..."})
+for _ in range(3):
+    cmd({"cmd":"servo","act":"set","angle":60}); time.sleep(0.3)
+    cmd({"cmd":"servo","act":"set","angle":120}); time.sleep(0.3)
+cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+```
+
+### Demo: Pomodoro Timer (25min work + 5min break)
+```python
+# Work phase - red backlight, countdown on display
+cmd({"cmd":"lcd","act":"rgb","r":255,"g":0,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  FOCUS TIME"})
+cmd({"cmd":"servo","act":"set","angle":0})  # flag down = working
+for remaining in range(25*60, 0, -1):
+    mins, secs = divmod(remaining, 60)
+    cmd({"cmd":"display","act":"number","value": mins*100 + secs})
+    cmd({"cmd":"display","act":"colon","on": remaining % 2 == 0})
+    cmd({"cmd":"lcd","act":"print","row":1,"text": f"  {mins:02d}:{secs:02d} left"})
+    time.sleep(1)
+# Time's up!
+cmd({"cmd":"servo","act":"set","angle":180})  # flag up = break
+cmd({"cmd":"lcd","act":"rgb","r":0,"g":255,"b":0})
+cmd({"cmd":"lcd","act":"print","row":0,"text":" BREAK TIME!"})
+cmd({"cmd":"buzzer","act":"melody","name":"success"})
+```
+
+### Demo: Morse Code
+```python
+MORSE = {'A':'.-','B':'-...','C':'-.-.','D':'-..','E':'.','F':'..-.','G':'--.','H':'....',
+'I':'..','J':'.---','K':'-.-','L':'.-..','M':'--','N':'-.','O':'---','P':'.--.','Q':'--.-',
+'R':'.-.','S':'...','T':'-','U':'..-','V':'...-','W':'.--','X':'-..-','Y':'-.--','Z':'--..'}
+def play_morse(text):
+    for ch in text.upper():
+        if ch == ' ':
+            time.sleep(0.7)
+            continue
+        code = MORSE.get(ch, '')
+        cmd({"cmd":"lcd","act":"print","row":1,"text": f" {ch} = {code}"})
+        for symbol in code:
+            ms = 200 if symbol == '.' else 600
+            cmd({"cmd":"buzzer","act":"tone","freq":800,"ms":ms})
+            cmd({"cmd":"servo","act":"set","angle": 0 if symbol=='.' else 180})
+            time.sleep(ms/1000 + 0.1)
+        cmd({"cmd":"servo","act":"set","angle":90})
+        time.sleep(0.3)
+play_morse("SOS")
+```
+
+### Demo: Music Player (Super Mario theme)
+```python
+mario = [(660,100),(660,100),(0,100),(660,100),(0,100),(510,100),(660,100),
+         (0,100),(770,100),(0,300),(380,100),(0,300)]
+cmd({"cmd":"lcd","act":"print","row":0,"text":" Super Mario!"})
+cmd({"cmd":"lcd","act":"rgb","r":255,"g":0,"b":0})
+for freq, ms in mario:
+    if freq > 0:
+        cmd({"cmd":"buzzer","act":"tone","freq":freq,"ms":ms})
+        cmd({"cmd":"servo","act":"set","angle": int(freq/5) % 180})
+    time.sleep(ms/1000 + 0.05)
+cmd({"cmd":"servo","act":"set","angle":90})
+```
+
+### Demo: Q&A Game (True/False with servo feedback)
+```python
+# Servo at 90° = ready, 0° = correct, 180° = wrong, shake = don't know
+cmd({"cmd":"servo","act":"set","angle":90})
+cmd({"cmd":"lcd","act":"print","row":0,"text":"  Ask me!"})
+
+def answer_yes():
+    cmd({"cmd":"lcd","act":"rgb","r":0,"g":255,"b":0})
+    cmd({"cmd":"buzzer","act":"melody","name":"success"})
+    cmd({"cmd":"servo","act":"smooth","angle":0,"speed":60})
+    time.sleep(5)
+    cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+
+def answer_no():
+    cmd({"cmd":"lcd","act":"rgb","r":255,"g":0,"b":0})
+    cmd({"cmd":"buzzer","act":"melody","name":"error"})
+    cmd({"cmd":"servo","act":"smooth","angle":180,"speed":60})
+    time.sleep(5)
+    cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+
+def answer_unknown():
+    cmd({"cmd":"lcd","act":"rgb","r":255,"g":255,"b":0})
+    for _ in range(3):
+        cmd({"cmd":"servo","act":"set","angle":60}); time.sleep(0.3)
+        cmd({"cmd":"servo","act":"set","angle":120}); time.sleep(0.3)
+    cmd({"cmd":"servo","act":"smooth","angle":90,"speed":60})
+```
+
+## Pre-built Demo Scripts
+
+| Script | Description | Run Command |
+|--------|-------------|-------------|
+| `happy_show.py` | 15s happy expression with all peripherals | `python3 ~/Documents/esp32/happy_show.py` |
+| `sad_show.py` | 15s melancholy show with fading heartbeat | `python3 ~/Documents/esp32/sad_show.py` |
+| `play_game.sh` | Interactive Q&A game shell script | `bash ~/Documents/esp32/play_game.sh` |
 ## Hardware Specs
 
 | Component | GPIO | Details |
