@@ -101,27 +101,40 @@ def shortcut_to_json(text):
 
 
 def receive_loop(sock):
-    """后台线程: 持续接收 ESP32 回复"""
+    """后台线程: 持续接收 ESP32 回复和事件推送"""
+    buf = ""
     try:
         while True:
             data = sock.recv(4096)
             if not data:
                 print("\n[连接断开]")
                 break
-            text = data.decode("utf-8", errors="replace").strip()
-            # 尝试美化 JSON 输出
-            try:
-                obj = json.loads(text)
-                status = obj.get("status", "")
-                msg = obj.get("msg", "")
-                extra = {k: v for k, v in obj.items() if k not in ("status", "cmd", "act", "msg")}
-                icon = "✓" if status == "ok" else "✗"
-                line = f"{icon} [{obj.get('cmd','')}.{obj.get('act','')}] {msg}"
-                if extra:
-                    line += f"  {extra}"
-                print(f"\n<< {line}")
-            except json.JSONDecodeError:
-                print(f"\n<< {text}")
+            buf += data.decode("utf-8", errors="replace")
+            # 按换行分割处理多条消息
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if "event" in obj:
+                        # ESP32 主动推送的事件
+                        evt = obj["event"]
+                        info = {k: v for k, v in obj.items() if k != "event"}
+                        print(f"\n⚡ [事件:{evt}] {info}")
+                    else:
+                        # 命令响应
+                        status = obj.get("status", "")
+                        msg = obj.get("msg", "")
+                        extra = {k: v for k, v in obj.items() if k not in ("status", "cmd", "act", "msg")}
+                        icon = "✓" if status == "ok" else "✗"
+                        out = f"{icon} [{obj.get('cmd','')}.{obj.get('act','')}] {msg}"
+                        if extra:
+                            out += f"  {extra}"
+                        print(f"\n<< {out}")
+                except json.JSONDecodeError:
+                    print(f"\n<< {line}")
             print(">> ", end="", flush=True)
     except OSError:
         pass

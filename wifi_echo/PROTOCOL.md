@@ -448,6 +448,83 @@ TM1637 四位七段数码管显示控制。
 
 ---
 
+## 事件推送 (ESP32 → 主机)
+
+ESP32 可主动向所有已连接的 TCP 客户端推送事件消息，无需主机请求。事件 JSON 以 `event` 字段标识，与命令响应（`status` 字段）区分。
+
+### 事件格式
+
+```json
+{"event": "事件名", ...数据}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `event` | string | 事件类型标识 |
+| 其他 | any | 事件相关数据 |
+
+### 内置事件
+
+#### heartbeat — 心跳状态 (每 30 秒)
+
+```json
+{"event": "heartbeat", "uptime": 120, "heap": 180000, "clients": 2}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `uptime` | int | 运行时间 (秒) |
+| `heap` | int | 剩余堆内存 (字节) |
+| `clients` | int | 当前 TCP 连接数 |
+
+仅在有客户端连接时才发送。
+
+#### wifi_connect — WiFi 客户端连接
+
+```json
+{"event": "wifi_connect", "aid": 1}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `aid` | int | 客户端 Association ID |
+
+#### wifi_disconnect — WiFi 客户端断开
+
+```json
+{"event": "wifi_disconnect", "aid": 1}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `aid` | int | 客户端 Association ID |
+
+### 区分事件和响应
+
+客户端收到 JSON 消息后，根据是否包含 `event` 字段区分：
+
+```python
+obj = json.loads(line)
+if "event" in obj:
+    # ESP32 主动推送的事件
+    handle_event(obj)
+else:
+    # 命令响应 (含 status 字段)
+    handle_response(obj)
+```
+
+### 扩展自定义事件
+
+在 ESP32 端任意位置调用 `broadcast_event()` 即可推送自定义事件：
+
+```c
+// 在中断、定时器或任务中调用
+broadcast_event("{\"event\":\"button\",\"gpio\":0,\"pressed\":true}");
+broadcast_event("{\"event\":\"sensor\",\"type\":\"temp\",\"value\":25.3}");
+```
+
+---
+
 ## 客户端快捷命令
 
 Python 客户端 (`wifi_client.py`) 支持快捷命令, 自动转换为 JSON:

@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -45,6 +46,66 @@
 servo_handle_t g_servo = NULL;
 tm1637_handle_t g_tm1637 = NULL;
 grove_lcd_handle_t g_lcd = NULL;
+
+/* ---- 已连接客户端列表 (用于事件广播) ---- */
+static int g_client_socks[MAX_CLIENTS];
+static SemaphoreHandle_t g_clients_mutex = NULL;
+
+static void clients_init(void)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        g_client_socks[i] = -1;
+    g_clients_mutex = xSemaphoreCreateMutex();
+}
+
+static void clients_add(int sock)
+{
+    xSemaphoreTake(g_clients_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (g_client_socks[i] < 0) {
+            g_client_socks[i] = sock;
+            break;
+        }
+    }
+    xSemaphoreGive(g_clients_mutex);
+}
+
+static void clients_remove(int sock)
+{
+    xSemaphoreTake(g_clients_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (g_client_socks[i] == sock) {
+            g_client_socks[i] = -1;
+            break;
+        }
+    }
+    xSemaphoreGive(g_clients_mutex);
+}
+
+static int clients_count(void)
+{
+    int n = 0;
+    xSemaphoreTake(g_clients_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (g_client_socks[i] >= 0) n++;
+    }
+    xSemaphoreGive(g_clients_mutex);
+    return n;
+}
+
+/* 向所有已连接客户端广播事件 JSON */
+void broadcast_event(const char *json_event)
+{
+    int len = strlen(json_event);
+    xSemaphoreTake(g_clients_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (g_client_socks[i] >= 0) {
+            send(g_client_socks[i], json_event, len, MSG_NOSIGNAL);
+            send(g_client_socks[i], "\n", 1, MSG_NOSIGNAL);
+        }
+    }
+    xSemaphoreGive(g_clients_mutex);
+}
 
 /* 外部声明的模块处理函数 */
 extern esp_err_t cmd_buzzer_handler(const char *action, const cJSON *req, cJSON *resp);
@@ -85,10 +146,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
         ESP_LOGI(TAG, "客户端连接, AID=%d", event->aid);
         buzzer_beep(3);
+        /* 广播 WiFi 客户端连接事件 */
+        char buf[80];
+        snprintf(buf, sizeof(buf), "{\"event\":\"wifi_connect\",\"aid\":%d}", event->aid);
+        broadcast_event(buf);
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t *event = (wifi_event_ap_stadisconnected_t *)event_data;
         ESP_LOGI(TAG, "客户端断开, AID=%d", event->aid);
         buzzer_beep(1);
+        /* 广播 WiFi 客户端断开事件 */
+        char buf[80];
+        snprintf(buf, sizeof(buf), "{\"event\":\"wifi_disconnect\",\"aid\":%d}", event->aid);
+        broadcast_event(buf);
     }
 }
 
@@ -129,6 +198,25 @@ static void wifi_init_softap(void)
     ESP_LOGI(TAG, "  TCP 端口: %d", TCP_PORT);
 }
 
+/* ---- 心跳任务: 定期向所有客户端推送状态 ---- */
+static void heartbeat_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        int n = clients_count();
+        if (n == 0) continue;
+
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"heartbeat\",\"uptime\":%u,\"heap\":%u,\"clients\":%d}",
+            (unsigned)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000),
+            (unsigned)esp_get_free_heap_size(),
+            n);
+        broadcast_event(buf);
+        ESP_LOGI(TAG, "心跳广播: %s", buf);
+    }
+}
+
 /* ---- TCP 回复辅助 ---- */
 static void tcp_reply(int sock, const char *msg)
 {
@@ -147,7 +235,8 @@ static void handle_client(void *pvParameters)
     int sock = (int)(intptr_t)pvParameters;
     char rx_buf[BUF_SIZE];
 
-    ESP_LOGI(TAG, "客户端任务启动, socket=%d", sock);
+    clients_add(sock);
+    ESP_LOGI(TAG, "客户端任务启动, socket=%d (在线: %d)", sock, clients_count());
 
     while (1) {
         int len = recv(sock, rx_buf, sizeof(rx_buf) - 1, 0);
@@ -197,8 +286,9 @@ static void handle_client(void *pvParameters)
         }
     }
 
+    clients_remove(sock);
     close(sock);
-    ESP_LOGI(TAG, "客户端任务结束, socket=%d", sock);
+    ESP_LOGI(TAG, "客户端任务结束, socket=%d (在线: %d)", sock, clients_count());
     vTaskDelete(NULL);
 }
 
@@ -444,11 +534,17 @@ void app_main(void)
     ESP_LOGI(TAG, "数码管已就绪");
     ESP_LOGI(TAG, "Grove LCD 已就绪");
 
+    /* 初始化客户端列表 */
+    clients_init();
+
     /* 启动 WiFi AP */
     wifi_init_softap();
 
     /* 启动 TCP 服务器 */
     xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
+
+    /* 启动心跳任务 (每 30 秒向所有客户端推送状态) */
+    xTaskCreate(heartbeat_task, "heartbeat", 2048, NULL, 2, NULL);
 
     /* 设备就绪提示音 */
     buzzer_beep(2);

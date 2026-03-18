@@ -11,13 +11,16 @@ ESP32 作为 WiFi AP + TCP 服务器，通过 **JSON 协议** 远程控制 5 个
   ┌────────────────┐                  ┌──────────────────────────┐
   │  wifi_client.py│──WiFi TCP───────►│  TCP Server :3333        │
   │  或 Python 脚本 │   JSON + \n      │     ↓                    │
-  └────────────────┘                  │  JSON 解析 → 模块分发     │
-                                      │     ↓                    │
+  │                │◄─── 事件推送 ────│  JSON 解析 → 模块分发     │
+  └────────────────┘   JSON + \n      │     ↓                    │
                                       │  ┌─buzzer  (GPIO 25)    │
                                       │  ├─servo   (GPIO 27)    │
                                       │  ├─display (GPIO 16,17) │
                                       │  ├─lcd     (GPIO 18,23) │
                                       │  └─sys                   │
+                                      │                          │
+                                      │  heartbeat 任务 (30s)    │
+                                      │  → broadcast_event()     │
                                       └──────────────────────────┘
 ```
 
@@ -34,6 +37,7 @@ ESP-IDF 基于 FreeRTOS 实时操作系统，使用多任务并发架构。ESP32
 | `main` (app_main) | 系统默认 | 1 | 启动后返回 | 初始化所有外设，启动开机动画，创建后续任务 |
 | `tcp_server` | 4096 B | 5 | 常驻 | TCP 监听，accept 新连接后创建 client 任务 |
 | `client` | 8192 B | 5 | 连接期间 | 每个 TCP 客户端一个独立任务，断开后自动删除 |
+| `heartbeat` | 2048 B | 2 | 常驻 | 每 30 秒向所有客户端广播心跳事件 (uptime/heap/clients) |
 | `tm_anim` | 2048 B | 3 | 开机动画 | 数码管开机动画 (~10s)，完成后自删除 |
 | `sv_anim` | 2048 B | 3 | 开机动画 | 舵机开机动画 (~10s)，完成后自删除 |
 | ESP 系统任务 | — | — | 常驻 | WiFi、lwIP、事件循环等由 ESP-IDF 自动管理 |
@@ -65,9 +69,11 @@ app_main() 任务开始
     │     └─ 主线程 LCD 动画  ← LCD 动画:   彩虹→打字机→渐变
     │
     ├─ 7. 等待所有动画完成
-    ├─ 8. wifi_init_softap()        ← 创建 WiFi AP 热点
-    ├─ 9. 创建 tcp_server 任务      ← 启动 TCP 监听
-    └─ 10. buzzer_beep(2)           ← 就绪提示音，app_main 返回
+    ├─ 8. clients_init()            ← 初始化客户端列表 + mutex
+    ├─ 9. wifi_init_softap()        ← 创建 WiFi AP 热点
+    ├─ 10. 创建 tcp_server 任务     ← 启动 TCP 监听
+    ├─ 11. 创建 heartbeat 任务      ← 每 30s 广播心跳事件
+    └─ 12. buzzer_beep(2)           ← 就绪提示音，app_main 返回
 ```
 
 ### 网络协议栈
@@ -163,6 +169,8 @@ esp_err_t handler(const char *action, const cJSON *req, cJSON *resp);
 ### 并发与同步
 
 - **TCP 客户端隔离**：每个客户端运行在独立 FreeRTOS 任务中，互不阻塞
+- **客户端列表管理**：`g_client_socks[]` 数组 + mutex 保护，支持注册/注销/广播
+- **事件推送**：`broadcast_event()` 持锁遍历客户端列表，向所有已连接 socket 发送事件 JSON
 - **命令串行执行**：同一客户端的命令在其任务内顺序处理（`smooth`、`sweep`、`tone` 等阻塞命令会阻塞当前客户端）
 - **跨客户端竞争**：多个客户端同时操作同一外设时无互斥锁，后到的命令直接覆盖（硬件无损，但行为不确定）
 - **开机动画同步**：`tm_anim` 和 `sv_anim` 通过 `volatile bool` 标志通知主线程完成，主线程轮询等待后再启动 WiFi
