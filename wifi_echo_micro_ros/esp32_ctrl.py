@@ -39,23 +39,30 @@ class ESP32Controller(Node):
     def __init__(self):
         super().__init__('esp32_ctrl')
 
-        qos = QoSProfile(
+        # micro-ROS subscribers default to RELIABLE
+        pub_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        # heartbeat/servo_state from micro-ROS use BEST_EFFORT
+        sub_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
 
-        # 持久 publisher — 创建一次, 重复使用
-        self.pub_servo = self.create_publisher(Float32, '/esp32/servo_cmd', qos)
-        self.pub_buzzer = self.create_publisher(Int32, '/esp32/buzzer_cmd', qos)
-        self.pub_display = self.create_publisher(Int32, '/esp32/display_cmd', qos)
-        self.pub_lcd = self.create_publisher(String, '/esp32/lcd_cmd', qos)
+        # 持久 publisher — 创建一次, 重复使用 (RELIABLE 匹配 micro-ROS subscriber)
+        self.pub_servo = self.create_publisher(Float32, '/esp32/servo_cmd', pub_qos)
+        self.pub_buzzer = self.create_publisher(Int32, '/esp32/buzzer_cmd', pub_qos)
+        self.pub_display = self.create_publisher(Int32, '/esp32/display_cmd', pub_qos)
+        self.pub_lcd = self.create_publisher(String, '/esp32/lcd_cmd', pub_qos)
 
-        # 订阅状态
+        # 订阅状态 (BEST_EFFORT 匹配 micro-ROS publisher)
         self._heartbeat = None
         self._servo_state = None
-        self.create_subscription(Int32, '/esp32/heartbeat', self._on_heartbeat, qos)
-        self.create_subscription(Float32, '/esp32/servo_state', self._on_servo_state, qos)
+        self.create_subscription(Int32, '/esp32/heartbeat', self._on_heartbeat, sub_qos)
+        self.create_subscription(Float32, '/esp32/servo_state', self._on_servo_state, sub_qos)
 
         # 等待 DDS 发现完成
         time.sleep(0.5)
@@ -160,7 +167,12 @@ def main():
     ctrl = ESP32Controller()
 
     # 后台 spin 处理订阅
-    spin_thread = threading.Thread(target=rclpy.spin, args=(ctrl,), daemon=True)
+    def _spin():
+        try:
+            rclpy.spin(ctrl)
+        except Exception:
+            pass
+    spin_thread = threading.Thread(target=_spin, daemon=True)
     spin_thread.start()
 
     print('ESP32 micro-ROS 控制器 (输入 help 查看命令)')

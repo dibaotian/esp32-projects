@@ -475,6 +475,15 @@ void app_main(void)
     grove_lcd_print(g_lcd, "WiFi Connected!");
     grove_lcd_set_cursor(g_lcd, 0, 1);
     grove_lcd_print(g_lcd, "Starting uROS..");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
+    /* 5 秒后切换到自定义欢迎消息 */
+    grove_lcd_clear(g_lcd);
+    grove_lcd_set_rgb(g_lcd, 0, 0, 255);
+    grove_lcd_set_cursor(g_lcd, 0, 0);
+    grove_lcd_print(g_lcd, "Hi Min Iam ready");
+    grove_lcd_set_cursor(g_lcd, 0, 1);
+    grove_lcd_print(g_lcd, "feed me token!");
 
     /* 启动 micro-ROS 任务 (PIN 到 APP_CPU, PRO_CPU 处理 WiFi) */
     xTaskCreate(micro_ros_task,
