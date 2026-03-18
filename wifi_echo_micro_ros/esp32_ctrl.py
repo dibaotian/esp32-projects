@@ -64,8 +64,22 @@ class ESP32Controller(Node):
         self.create_subscription(Int32, '/esp32/heartbeat', self._on_heartbeat, sub_qos)
         self.create_subscription(Float32, '/esp32/servo_state', self._on_servo_state, sub_qos)
 
-        # 等待 DDS 发现完成
-        time.sleep(0.5)
+    def wait_for_subscribers(self, timeout=5.0):
+        """等待 ESP32 subscriber 被发现 (DDS discovery)"""
+        pubs = [self.pub_servo, self.pub_buzzer, self.pub_display, self.pub_lcd]
+        names = ['servo', 'buzzer', 'display', 'lcd']
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            counts = [p.get_subscription_count() for p in pubs]
+            if all(c > 0 for c in counts):
+                return True
+            time.sleep(0.1)
+        # 打印未匹配的 topic
+        counts = [p.get_subscription_count() for p in pubs]
+        missing = [n for n, c in zip(names, counts) if c == 0]
+        if missing:
+            print(f'  警告: 未发现 ESP32 订阅者: {", ".join(missing)} (命令可能丢失)')
+        return False
 
     def _on_heartbeat(self, msg):
         self._heartbeat = msg.data
@@ -166,17 +180,24 @@ def main():
     rclpy.init()
     ctrl = ESP32Controller()
 
-    # 后台 spin 处理订阅
+    # 后台 spin (spin_once 循环, 每次短暂释放 GIL 避免阻塞主线程)
+    _running = True
     def _spin():
-        try:
-            rclpy.spin(ctrl)
-        except Exception:
-            pass
+        while _running and rclpy.ok():
+            try:
+                rclpy.spin_once(ctrl, timeout_sec=0.05)
+            except Exception:
+                break
     spin_thread = threading.Thread(target=_spin, daemon=True)
     spin_thread.start()
 
-    print('ESP32 micro-ROS 控制器 (输入 help 查看命令)')
-    print('Publisher 已就绪, 命令将即时发送\n')
+    print('ESP32 micro-ROS 控制器')
+    print('等待 DDS 发现 ESP32 节点...', end=' ', flush=True)
+    if ctrl.wait_for_subscribers(timeout=5.0):
+        print('已就绪!')
+    else:
+        print('(超时, 部分 topic 未匹配)')
+    print('输入 help 查看命令\n')
 
     try:
         while True:
@@ -252,6 +273,8 @@ def main():
     except KeyboardInterrupt:
         print()
 
+    _running = False
+    spin_thread.join(timeout=1.0)
     try:
         ctrl.destroy_node()
         rclpy.shutdown()

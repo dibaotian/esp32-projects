@@ -151,10 +151,10 @@ static void hw_worker_task(void *arg)
             break;
         }
         case HW_CMD_LCD: {
-            ESP_LOGI(TAG, "LCD: %s", cmd.lcd_text);
+            size_t len = strlen(cmd.lcd_text);
+            ESP_LOGI(TAG, "LCD: [%zu] \"%s\"", len, cmd.lcd_text);
             grove_lcd_clear(g_lcd);
             grove_lcd_set_cursor(g_lcd, 0, 0);
-            size_t len = strlen(cmd.lcd_text);
             if (len <= 16) {
                 grove_lcd_print(g_lcd, cmd.lcd_text);
             } else {
