@@ -77,7 +77,100 @@ static std_msgs__msg__String  msg_lcd_cmd;
 static char lcd_cmd_buf[64];
 
 /* ================================================================
- *  订阅者回调
+ *  硬件命令队列 (非阻塞回调 → worker 任务执行)
+ *
+ *  所有 subscriber 回调只往队列发命令立即返回,
+ *  不阻塞 executor, 保持 XRCE-DDS 会话活跃。
+ * ================================================================ */
+
+typedef enum {
+    HW_CMD_SERVO,
+    HW_CMD_BUZZER,
+    HW_CMD_DISPLAY,
+    HW_CMD_LCD,
+} hw_cmd_type_t;
+
+typedef struct {
+    hw_cmd_type_t type;
+    union {
+        float   servo_angle;
+        int32_t buzzer_val;
+        int32_t display_val;
+        char    lcd_text[64];
+    };
+} hw_cmd_t;
+
+static QueueHandle_t g_hw_queue = NULL;
+
+/* Worker 任务: 从队列取命令, 执行硬件操作 (允许阻塞) */
+static void hw_worker_task(void *arg)
+{
+    hw_cmd_t cmd;
+    while (1) {
+        if (xQueueReceive(g_hw_queue, &cmd, portMAX_DELAY) != pdTRUE)
+            continue;
+        switch (cmd.type) {
+        case HW_CMD_SERVO: {
+            float angle = cmd.servo_angle;
+            if (angle < 0.0f)   angle = 0.0f;
+            if (angle > 180.0f) angle = 180.0f;
+            ESP_LOGI(TAG, "舵机命令: %.1f°", angle);
+            servo_set_angle(g_servo, angle);
+            break;
+        }
+        case HW_CMD_BUZZER: {
+            int32_t val = cmd.buzzer_val;
+            if (val > 0 && val <= 10) {
+                ESP_LOGI(TAG, "蜂鸣器: beep × %d", (int)val);
+                buzzer_beep((int)val);
+            } else if (val > 20 && val <= 20000) {
+                ESP_LOGI(TAG, "蜂鸣器: tone %d Hz / 500ms", (int)val);
+                buzzer_tone_ms((uint32_t)val, 500);
+            } else if (val == 0) {
+                ESP_LOGI(TAG, "蜂鸣器: 停止");
+                buzzer_stop();
+            } else if (val == -1) {
+                buzzer_play_startup();
+            } else if (val == -2) {
+                buzzer_play_success();
+            } else if (val == -3) {
+                buzzer_play_error();
+            }
+            break;
+        }
+        case HW_CMD_DISPLAY: {
+            int32_t num = cmd.display_val;
+            ESP_LOGI(TAG, "数码管: %d", (int)num);
+            if (num >= 0 && num <= 9999) {
+                tm1637_show_number(g_tm1637, (int)num, false);
+            } else if (num == -1) {
+                tm1637_clear(g_tm1637);
+            }
+            break;
+        }
+        case HW_CMD_LCD: {
+            ESP_LOGI(TAG, "LCD: %s", cmd.lcd_text);
+            grove_lcd_clear(g_lcd);
+            grove_lcd_set_cursor(g_lcd, 0, 0);
+            size_t len = strlen(cmd.lcd_text);
+            if (len <= 16) {
+                grove_lcd_print(g_lcd, cmd.lcd_text);
+            } else {
+                char line1[17];
+                memcpy(line1, cmd.lcd_text, 16);
+                line1[16] = '\0';
+                grove_lcd_print(g_lcd, line1);
+                grove_lcd_set_cursor(g_lcd, 0, 1);
+                grove_lcd_print(g_lcd, cmd.lcd_text + 16);
+            }
+            break;
+        }
+        }
+    }
+}
+
+/* ================================================================
+ *  订阅者回调 (非阻塞: 仅入队, 立即返回)
  * ================================================================ */
 
 /*
@@ -86,84 +179,43 @@ static char lcd_cmd_buf[64];
 static void servo_cmd_callback(const void *msgin)
 {
     const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msgin;
-    float angle = msg->data;
-    if (angle < 0.0f)   angle = 0.0f;
-    if (angle > 180.0f) angle = 180.0f;
-    ESP_LOGI(TAG, "舵机命令: %.1f°", angle);
-    servo_set_angle(g_servo, angle);
+    hw_cmd_t cmd = { .type = HW_CMD_SERVO, .servo_angle = msg->data };
+    xQueueSend(g_hw_queue, &cmd, 0);
 }
 
 /*
  * /esp32/buzzer_cmd (Int32) → 蜂鸣器控制
- *   1~10   : beep N 次
- *   21~20000: 指定频率 tone 500ms
- *   0      : 停止
- *   -1     : 开机音效
- *   -2     : 成功音效
- *   -3     : 错误音效
  */
 static void buzzer_cmd_callback(const void *msgin)
 {
     const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
-    int32_t val = msg->data;
-    if (val > 0 && val <= 10) {
-        ESP_LOGI(TAG, "蜂鸣器: beep × %d", (int)val);
-        buzzer_beep((int)val);
-    } else if (val > 20 && val <= 20000) {
-        ESP_LOGI(TAG, "蜂鸣器: tone %d Hz / 500ms", (int)val);
-        buzzer_tone_ms((uint32_t)val, 500);
-    } else if (val == 0) {
-        ESP_LOGI(TAG, "蜂鸣器: 停止");
-        buzzer_stop();
-    } else if (val == -1) {
-        buzzer_play_startup();
-    } else if (val == -2) {
-        buzzer_play_success();
-    } else if (val == -3) {
-        buzzer_play_error();
-    }
+    hw_cmd_t cmd = { .type = HW_CMD_BUZZER, .buzzer_val = msg->data };
+    xQueueSend(g_hw_queue, &cmd, 0);
 }
 
 /*
  * /esp32/display_cmd (Int32) → 数码管显示
- *   0~9999 : 显示数字
- *   -1     : 清屏
  */
 static void display_cmd_callback(const void *msgin)
 {
     const std_msgs__msg__Int32 *msg = (const std_msgs__msg__Int32 *)msgin;
-    int32_t num = msg->data;
-    ESP_LOGI(TAG, "数码管: %d", (int)num);
-    if (num >= 0 && num <= 9999) {
-        tm1637_show_number(g_tm1637, (int)num, false);
-    } else if (num == -1) {
-        tm1637_clear(g_tm1637);
-    }
+    hw_cmd_t cmd = { .type = HW_CMD_DISPLAY, .display_val = msg->data };
+    xQueueSend(g_hw_queue, &cmd, 0);
 }
 
 /*
  * /esp32/lcd_cmd (String) → LCD 显示文本
- *   发送字符串, 自动清屏并显示在第一行
  */
 static void lcd_cmd_callback(const void *msgin)
 {
     const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
     if (msg->data.data && msg->data.size > 0) {
-        ESP_LOGI(TAG, "LCD: %s", msg->data.data);
-        grove_lcd_clear(g_lcd);
-        grove_lcd_set_cursor(g_lcd, 0, 0);
-        /* 第一行最多 16 字符 */
-        if (msg->data.size <= 16) {
-            grove_lcd_print(g_lcd, msg->data.data);
-        } else {
-            /* 超过 16 字符: 前 16 显示第一行, 其余第二行 */
-            char line1[17];
-            memcpy(line1, msg->data.data, 16);
-            line1[16] = '\0';
-            grove_lcd_print(g_lcd, line1);
-            grove_lcd_set_cursor(g_lcd, 0, 1);
-            grove_lcd_print(g_lcd, msg->data.data + 16);
-        }
+        hw_cmd_t cmd = { .type = HW_CMD_LCD };
+        size_t copy_len = msg->data.size < sizeof(cmd.lcd_text) - 1
+                        ? msg->data.size : sizeof(cmd.lcd_text) - 1;
+        memcpy(cmd.lcd_text, msg->data.data, copy_len);
+        cmd.lcd_text[copy_len] = '\0';
+        xQueueSend(g_hw_queue, &cmd, 0);
     }
 }
 
@@ -353,6 +405,10 @@ static void micro_ros_task(void *arg)
     grove_lcd_print(g_lcd, "Node: esp32_ctrl");
     tm1637_show_string(g_tm1637, "GO  ");
     buzzer_play_success();
+
+    /* 启动硬件 worker 任务 (从队列取命令, 允许阻塞) */
+    g_hw_queue = xQueueCreate(8, sizeof(hw_cmd_t));
+    xTaskCreate(hw_worker_task, "hw_worker", 4096, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "执行器已启动, 等待 ROS 2 命令...");
 
