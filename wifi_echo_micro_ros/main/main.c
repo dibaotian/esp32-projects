@@ -7,9 +7,17 @@
  * ESP32 micro-ROS 控制节点
  * 功能:
  *   - WiFi STA 连接 Ubuntu 热点 (SSID: Ubuntu-ROS)
- *   - micro-ROS 节点通过 UDP 连接 Agent (10.42.0.1:8888)
+ *   - micro-ROS 节点通过 UDP 连接 Agent (192.168.100.1:8888)
  *   - ROS 2 话题控制蜂鸣器/舵机/数码管/LCD
  *   - 心跳发布 + 舵机状态反馈
+ *
+ * FreeRTOS 任务:
+ *   - app_main (prio 1): 初始化 + 开机动画 + WiFi + 创建 uros_task
+ *   - uros_task (prio 5): micro-ROS executor 主循环
+ *   - hw_worker (prio 6): 从队列取硬件命令执行 (允许阻塞)
+ *
+ * CONFIG_FREERTOS_HZ=100 (tick=10ms):
+ *   pdMS_TO_TICKS(N) = 0 when N<10, 使用 esp_rom_delay_us() 替代
  */
 
 #include <string.h>

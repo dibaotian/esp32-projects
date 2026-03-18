@@ -24,7 +24,7 @@
 - `components/buzzer/` — 蜂鸣器驱动 (LEDC PWM)
 - `components/servo/` — 舵机驱动 (LEDC PWM 50Hz)
 - `components/tm1637/` — TM1637 四位七段数码管驱动
-- `components/grove_lcd/` — Grove LCD RGB 16x2 驱动 (I2C)
+- `components/grove_lcd/` — Grove LCD RGB 16x2 驱动 (I2C, 已修复 HD44780 时序)
 
 ### 删除/替换的部分
 
@@ -106,8 +106,13 @@
 | 任务名 | 栈大小 | 优先级 | 说明 |
 |--------|--------|--------|------|
 | `main` (app_main) | 8192 B | 1 | 初始化外设 + 开机动画 + WiFi STA + 创建 uros 任务 |
-| `uros_task` | 16384 B | 5 | micro-ROS executor 主循环 (含心跳定时器 + 4个订阅者) |
+| `uros_task` | 16384 B | 5 | micro-ROS executor 主循环 (含心跳定时器 + 4个订阅者) || `hw_worker` | 4096 B | 6 | 从队列取硬件命令执行 (优先级高于 executor, 确保即时响应) |
 
+> **优先级设计**: hw_worker(6) > uros_task(5)，当 subscriber 回调通过 `xQueueSend` 入队后，
+> hw_worker 立即抢占 uros_task 执行硬件操作，确保零延迟响应。
+
+> **CONFIG_FREERTOS_HZ=100** (tick=10ms): `pdMS_TO_TICKS(N)` 当 N<10 时等于 0，
+> 因此 grove_lcd 驱动中 HD44780 时序用 `esp_rom_delay_us()` 替代 `vTaskDelay`。
 ### 启动流程
 
 ```
@@ -117,18 +122,21 @@ app_main()
     ├─ 2. 外设初始化 (buzzer/servo/tm1637/grove_lcd)
     ├─ 3. 开机动画 (与 wifi_echo 相同)
     ├─ 4. WiFi STA 初始化 → 连接 Ubuntu 热点 (Ubuntu-ROS)
-    ├─ 5. 等待获取 IP 地址 (192.168.100.x)
-    ├─ 6. micro-ROS 传输层初始化 (UDP → Agent IP:port)
-    ├─ 7. xTaskCreate(micro_ros_task) → uros_task 开始 ↓
+    ├─ 5. 禁用 WiFi 省电 (WIFI_PS_NONE, 保证 UDP 稳定)
+    ├─ 6. xTaskCreate(micro_ros_task) → uros_task 开始 ↓
     │
     │   ── micro_ros_task() 内部 ──
-    ├─ 8. 创建 micro-ROS 节点 "esp32_controller" (namespace: esp32)
-    ├─ 9. 创建 2 个 publishers (heartbeat, servo_state)
-    ├─ 10. 创建 4 个 subscribers (servo_cmd, buzzer_cmd, display_cmd, lcd_cmd)
-    ├─ 11. 创建心跳定时器 (5 秒, 发布 uptime + 舵机角度)
-    ├─ 12. 初始化 executor (5 handles = 4 sub + 1 timer)
-    ├─ 13. LCD 显示 "ROS2 Connected!"
-    └─ 14. rclc_executor_spin_some() 无限循环
+    ├─ 7. 连接 micro-ROS Agent (带重试)
+    ├─ 8. 等待 XRCE-DDS 会话稳定 (500ms)
+    ├─ 9. 创建节点 "esp32_controller" (namespace: esp32)
+    ├─ 10. 创建 2 个 publishers (每次间隔 200ms)
+    ├─ 11. 创建 4 个 subscribers (每次间隔 200ms)
+    ├─ 12. 创建心跳定时器 (5 秒)
+    ├─ 13. 初始化 executor (5 handles = 4 sub + 1 timer)
+    ├─ 14. LCD 显示 "ROS2 Connected!"
+    ├─ 15. 启动 hw_worker 任务 (优先级 6, 栈 4096B)
+    ├─ 16. 5秒后 LCD 切换欢迎信息
+    └─ 17. rclc_executor_spin_some(20ms) + vTaskDelay(1) 无限循环
 ```
 
 ## 硬件配置
@@ -421,6 +429,65 @@ ros2 topic pub --once /esp32/lcd_cmd std_msgs/msg/String "{data: 'Hello ROS2!'}"
 ros2 topic pub --once /esp32/lcd_cmd std_msgs/msg/String "{data: 'Line1 16chars!! Line2 here'}"
 ```
 
+> **注意**: `ros2 topic pub --once` 每次都要做 DDS 发现, 有 2-3 秒延迟。
+> 推荐使用下面的交互式控制器。
+
+### 快速控制: esp32_ctrl.py (推荐)
+
+`esp32_ctrl.py` 是持久连接的交互式 Python 控制器, 跳过 DDS 发现开销, 命令延迟 <100ms:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/Documents/esp32/wifi_echo_micro_ros
+python3 esp32_ctrl.py
+```
+
+交互示例:
+
+```
+ESP32 micro-ROS 控制器
+等待 DDS 发现 ESP32 节点... 已就绪!
+输入 help 查看命令
+
+esp32> servo 90
+  → 舵机: 90.0°
+esp32> buzzer 3
+  → 蜂鸣器: beep × 3
+esp32> display 2026
+  → 数码管: 2026
+esp32> lcd Hello ROS2!
+  → LCD: Hello ROS2!
+esp32> scan
+  → 舵机: 0.0°
+  → 舵机: 10.0°
+  ...
+esp32> demo
+--- 演示开始 ---
+...
+--- 演示结束 ---
+esp32> status
+  心跳: 120s
+  舵机: 90.0°
+esp32> quit
+已退出
+```
+
+完整命令列表:
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `servo <角度>` | 舵机 0~180° | `servo 90` |
+| `buzzer <次数>` | 蜂鸣器响 N 次 | `buzzer 3` |
+| `tone <频率>` | 播放频率 Hz | `tone 1000` |
+| `buzzer stop/startup/success/error` | 蜂鸣器控制 | `buzzer success` |
+| `display <数字>` | 数码管 0~9999 | `display 2026` |
+| `display off` | 数码管清屏 | |
+| `lcd <文字>` | LCD 显示文字 | `lcd Hello` |
+| `scan` | 舵机扫描 0→180→0 | |
+| `demo` | 完整演示序列 | |
+| `status` | 查看心跳和舵机角度 | |
+| `quit` | 退出 | |
+
 ### 步骤 6: 停止服务
 
 ```bash
@@ -448,15 +515,18 @@ wifi_echo_micro_ros/
 ├── CMakeLists.txt              # 项目 CMake
 ├── README.md                   # 本文档
 ├── sdkconfig.defaults          # ESP-IDF 配置 (WiFi STA + micro-ROS)
+├── sdkconfig                   # 实际编译配置 (100Hz tick 等)
+├── app-colcon.meta             # XRCE-DDS 实体限制配置
+├── esp32_ctrl.py               # 交互式 Python 控制器 (推荐)
 ├── main/
 │   ├── CMakeLists.txt          # 组件依赖声明
 │   ├── Kconfig.projbuild       # 栈大小/优先级配置
-│   └── main.c                  # micro-ROS 节点 (subscriber/publisher)
-└── components/                 # 从 wifi_echo 复制, 代码不变
+│   └── main.c                  # micro-ROS 节点 + hw_worker 任务
+└── components/
     ├── buzzer/                 # 蜂鸣器驱动
     ├── servo/                  # 舵机驱动
     ├── tm1637/                 # TM1637 数码管驱动
-    ├── grove_lcd/              # Grove LCD RGB 驱动
+    ├── grove_lcd/              # Grove LCD RGB 驱动 (已修复 HD44780 时序)
     └── micro_ros_espidf_component/  # micro-ROS 库 (git clone)
 ```
 
@@ -483,6 +553,12 @@ docker run --rm --net=host microros/micro-ros-agent:jazzy udp4 --port 8888 -v6
 # 终端3: 烧录 + 测试
 source ~/esp/esp-idf/export.sh && cd ~/Documents/esp32/wifi_echo_micro_ros
 idf.py -p /dev/ttyUSB0 flash monitor   # Ctrl+] 退出后继续:
+
+# 方式 1: 交互式控制器 (推荐, 延迟 <100ms)
+source /opt/ros/jazzy/setup.bash
+python3 esp32_ctrl.py
+
+# 方式 2: ros2 命令行 (每次 ~2-3 秒 DDS 发现)
 source /opt/ros/jazzy/setup.bash
 ros2 node list
 ros2 topic pub --once /esp32/servo_cmd std_msgs/msg/Float32 "{data: 90.0}"

@@ -23,6 +23,7 @@
 #include "grove_lcd.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -125,26 +126,28 @@ esp_err_t grove_lcd_init(const grove_lcd_config_t *config, grove_lcd_handle_t *h
     }
     dev->i2c_port = config->i2c_port;
 
-    /* LCD 初始化序列 (HD44780) */
-    vTaskDelay(pdMS_TO_TICKS(50));  /* 等待 LCD 上电稳定 */
+    /* LCD 初始化序列 (HD44780)
+     * 注: vTaskDelay(pdMS_TO_TICKS(N)) at 100Hz tick = 0 when N<10,
+     *     所以使用 esp_rom_delay_us() 精确忙等 */
+    vTaskDelay(pdMS_TO_TICKS(50));  /* 等待 LCD 上电稳定 (50ms → 5 ticks OK) */
 
     /* Function set: 2行, 5x8点阵 */
     lcd_write_cmd(dev, LCD_CMD_FUNCTION_SET | LCD_2LINE | LCD_5x8DOTS);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_rom_delay_us(5000);
 
     /* Display on, cursor off, blink off */
     dev->display_ctrl = LCD_DISPLAY_ON;
     lcd_write_cmd(dev, LCD_CMD_DISPLAY_CTRL | dev->display_ctrl);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_rom_delay_us(5000);
 
     /* Clear */
     lcd_write_cmd(dev, LCD_CMD_CLEAR);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_rom_delay_us(2000);
 
     /* Entry mode: increment, no shift */
     dev->entry_mode = LCD_ENTRY_INCREMENT;
     lcd_write_cmd(dev, LCD_CMD_ENTRY_MODE | dev->entry_mode);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_rom_delay_us(5000);
 
     /* RGB 背光初始化 (PCA9632) */
     rgb_write_reg(dev, PCA_REG_MODE1, 0x00);   /* Normal mode */
@@ -180,7 +183,7 @@ esp_err_t grove_lcd_clear(grove_lcd_handle_t handle)
 {
     if (!handle) return ESP_ERR_INVALID_ARG;
     esp_err_t ret = lcd_write_cmd(handle, LCD_CMD_CLEAR);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    esp_rom_delay_us(2000);  /* HD44780 clear 需要 1.52ms */
     return ret;
 }
 
@@ -188,7 +191,7 @@ esp_err_t grove_lcd_home(grove_lcd_handle_t handle)
 {
     if (!handle) return ESP_ERR_INVALID_ARG;
     esp_err_t ret = lcd_write_cmd(handle, LCD_CMD_HOME);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    esp_rom_delay_us(2000);  /* HD44780 home 需要 1.52ms */
     return ret;
 }
 
