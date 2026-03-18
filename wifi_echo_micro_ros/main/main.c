@@ -49,6 +49,7 @@
 #include "grove_lcd.h"
 
 #include "esp_wifi.h"
+#include "esp_netif.h"
 
 #define TAG "UROS_CTRL"
 
@@ -112,6 +113,10 @@ typedef struct {
 
 static QueueHandle_t g_hw_queue = NULL;
 
+/* 前向声明 (定义在 hw_worker 之后) */
+static void lcd_status(const char *line1, const char *line2,
+                       uint8_t r, uint8_t g, uint8_t b);
+
 /* Worker 任务: 从队列取命令, 执行硬件操作 (允许阻塞) */
 static void hw_worker_task(void *arg)
 {
@@ -150,11 +155,51 @@ static void hw_worker_task(void *arg)
         }
         case HW_CMD_DISPLAY: {
             int32_t num = cmd.display_val;
-            ESP_LOGI(TAG, "数码管: %d", (int)num);
             if (num >= 0 && num <= 9999) {
+                ESP_LOGI(TAG, "数码管: %d", (int)num);
                 tm1637_show_number(g_tm1637, (int)num, false);
             } else if (num == -1) {
+                ESP_LOGI(TAG, "数码管: 清屏");
                 tm1637_clear(g_tm1637);
+            } else if (num == -10) {
+                /* 诊断: 系统信息 */
+                uint32_t uptime = xTaskGetTickCount() * portTICK_PERIOD_MS / 1000;
+                uint32_t heap_kb = (uint32_t)(esp_get_free_heap_size() / 1024);
+                uint32_t min_kb = (uint32_t)(esp_get_minimum_free_heap_size() / 1024);
+                ESP_LOGI(TAG, "[DIAG] up=%lus heap=%luK min=%luK",
+                         (unsigned long)uptime, (unsigned long)heap_kb,
+                         (unsigned long)min_kb);
+                char l1[17], l2[17];
+                snprintf(l1, sizeof(l1), "Up:%us", (unsigned)uptime);
+                snprintf(l2, sizeof(l2), "%u/%uK",
+                         (unsigned)heap_kb, (unsigned)min_kb);
+                lcd_status(l1, l2, 255, 255, 0);
+                tm1637_show_number(g_tm1637, (int)heap_kb, false);
+            } else if (num == -11) {
+                /* 诊断: WiFi 信息 */
+                wifi_ap_record_t ap;
+                esp_wifi_sta_get_ap_info(&ap);
+                esp_netif_ip_info_t ip_info;
+                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                esp_netif_get_ip_info(netif, &ip_info);
+                ESP_LOGI(TAG, "[DIAG] SSID=%s RSSI=%d IP=" IPSTR,
+                         (char*)ap.ssid, ap.rssi,
+                         IP2STR(&ip_info.ip));
+                char l1[17], l2[17];
+                snprintf(l1, sizeof(l1), "RSSI:%d dBm", (int)ap.rssi);
+                snprintf(l2, sizeof(l2), IPSTR, IP2STR(&ip_info.ip));
+                lcd_status(l1, l2, 0, 200, 255);
+            } else if (num == -12) {
+                /* 诊断: 任务栈水位 */
+                UBaseType_t uros_hw = uxTaskGetStackHighWaterMark(NULL); /* hw_worker 自身 */
+                ESP_LOGI(TAG, "[DIAG] hw_worker stack HW=%lu words",
+                         (unsigned long)uros_hw);
+                char l1[17], l2[17];
+                snprintf(l1, sizeof(l1), "Stk HW:%u",
+                         (unsigned)uros_hw);
+                snprintf(l2, sizeof(l2), "Q:%u/%d",
+                         (unsigned)uxQueueMessagesWaiting(g_hw_queue), 8);
+                lcd_status(l1, l2, 200, 0, 255);
             }
             break;
         }
@@ -248,21 +293,39 @@ static void heartbeat_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
 }
 
 /* ================================================================
+ *  LCD 状态显示辅助函数
+ *  第一行: 固定标题 (≤16字符)
+ *  第二行: 状态文字 (≤16字符)
+ *  RGB: 背光颜色
+ * ================================================================ */
+
+static void lcd_status(const char *line1, const char *line2,
+                       uint8_t r, uint8_t g, uint8_t b)
+{
+    grove_lcd_clear(g_lcd);
+    grove_lcd_set_rgb(g_lcd, r, g, b);
+    grove_lcd_set_cursor(g_lcd, 0, 0);
+    grove_lcd_print(g_lcd, line1);
+    grove_lcd_set_cursor(g_lcd, 0, 1);
+    grove_lcd_print(g_lcd, line2);
+}
+
+/* ================================================================
  *  开机动画
  * ================================================================ */
 
 static void boot_animation(void)
 {
-    /* LCD: 显示启动信息 + 彩虹 RGB */
+    /* [1/6] 开机动画 + 彩虹 RGB */
     const uint8_t rainbow[][3] = {
         {255,0,0}, {255,80,0}, {255,200,0}, {200,255,0},
         {0,255,0}, {0,255,150}, {0,200,255}, {0,100,255},
         {0,0,255}, {80,0,255}, {200,0,255}, {255,0,200},
     };
     grove_lcd_clear(g_lcd);
-    grove_lcd_set_cursor(g_lcd, 1, 0);
-    grove_lcd_print(g_lcd, "micro-ROS Node");
-    grove_lcd_set_cursor(g_lcd, 1, 1);
+    grove_lcd_set_cursor(g_lcd, 0, 0);
+    grove_lcd_print(g_lcd, "[1/6] Boot");
+    grove_lcd_set_cursor(g_lcd, 0, 1);
     grove_lcd_print(g_lcd, "== ESP32  AI ==");
     for (int i = 0; i < 12; i++) {
         grove_lcd_set_rgb(g_lcd, rainbow[i][0], rainbow[i][1], rainbow[i][2]);
@@ -280,12 +343,7 @@ static void boot_animation(void)
     servo_smooth_move(g_servo, 90, 40);
 
     /* LCD: 切换到连接提示 */
-    grove_lcd_clear(g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 200, 255);
-    grove_lcd_set_cursor(g_lcd, 0, 0);
-    grove_lcd_print(g_lcd, "Connecting WiFi");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "Ubuntu-ROS...");
+    lcd_status("[2/6] WiFi", "Connecting...", 0, 200, 255);
 
     buzzer_beep(2);
 }
@@ -313,6 +371,7 @@ static void micro_ros_task(void *arg)
 #endif
 
     /* 连接 Agent (带重试, 每次超时后重新初始化) */
+    lcd_status("[3/6] Agent", "Connecting...", 255, 200, 0);
     ESP_LOGI(TAG, "连接 micro-ROS Agent (%s:%s) ...",
              CONFIG_MICRO_ROS_AGENT_IP, CONFIG_MICRO_ROS_AGENT_PORT);
     rcl_ret_t rc;
@@ -323,11 +382,14 @@ static void micro_ros_task(void *arg)
                                             &init_options, &allocator);
         if (rc != RCL_RET_OK) {
             ESP_LOGW(TAG, "Agent 连接失败 (尝试 %d), 2 秒后重试...", attempt);
+            char retry_buf[17];
+            snprintf(retry_buf, sizeof(retry_buf), "Attempt %d", attempt % 100);
+            lcd_status("[3/6] Agent", retry_buf, 255, 80, 0);
             vTaskDelay(pdMS_TO_TICKS(2000));
             /* 重新初始化 init_options 用于下次尝试 */
-            rcl_init_options_fini(&init_options);
+            (void)rcl_init_options_fini(&init_options);
             init_options = rcl_get_zero_initialized_init_options();
-            rcl_init_options_init(&init_options, allocator);
+            (void)rcl_init_options_init(&init_options, allocator);
 #ifdef CONFIG_MICRO_ROS_ESP_XRCE_DDS_MIDDLEWARE
             rmw_options = rcl_init_options_get_rmw_init_options(&init_options);
             rmw_uros_options_set_udp_address(
@@ -338,11 +400,18 @@ static void micro_ros_task(void *arg)
         }
     } while (rc != RCL_RET_OK);
     ESP_LOGI(TAG, "Agent 已连接! (第 %d 次尝试)", attempt);
+    lcd_status("[3/6] Agent", "Connected!", 0, 255, 80);
 
     /* 等待 XRCE-DDS 会话稳定 */
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    /* 创建节点: /esp32/esp32_controller */
+    /* 创建节点: /esp32/esp32_controller
+     * 注意: 实体创建期间不能调用 lcd_status (grove_lcd_clear 有 2ms busy-wait,
+     * 会阻塞 XRCE-DDS 会话维护导致实体创建失败).
+     * LCD 只在整个创建块之前/之后更新. */
+    lcd_status("[4/6] ROS2", "Creating node..", 0, 150, 255);
+    vTaskDelay(pdMS_TO_TICKS(100));  /* 让 LCD I2C 完成 */
+
     rcl_node_t node;
     RCCHECK(rclc_node_init_default(&node, "esp32_controller", "esp32",
                                    &support));
@@ -399,6 +468,9 @@ static void micro_ros_task(void *arg)
     msg_lcd_cmd.data.capacity = sizeof(lcd_cmd_buf);
 
     /* ---- 执行器: 4 subscribers + 1 timer = 5 handles ---- */
+    /* 实体创建完毕, 现在可以安全更新 LCD */
+    lcd_status("[5/6] Executor", "Starting...", 0, 150, 255);
+    vTaskDelay(pdMS_TO_TICKS(100));
     rclc_executor_t executor;
     RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
     RCCHECK(rclc_executor_add_subscription(
@@ -415,13 +487,8 @@ static void micro_ros_task(void *arg)
         lcd_cmd_callback, ON_NEW_DATA));
     RCCHECK(rclc_executor_add_timer(&executor, &timer));
 
-    /* 连接成功 → 更新 LCD */
-    grove_lcd_clear(g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 0, 255);
-    grove_lcd_set_cursor(g_lcd, 0, 0);
-    grove_lcd_print(g_lcd, "ROS2 Connected!");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "Node: esp32_ctrl");
+    /* 全部就绪 */
+    lcd_status("[6/6] Ready!", "Node: esp32_ctrl", 0, 255, 0);
     tm1637_show_string(g_tm1637, "GO  ");
     buzzer_play_success();
 
@@ -433,12 +500,7 @@ static void micro_ros_task(void *arg)
 
     /* 5 秒后切换到自定义欢迎消息 */
     vTaskDelay(pdMS_TO_TICKS(5000));
-    grove_lcd_clear(g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 0, 255);
-    grove_lcd_set_cursor(g_lcd, 0, 0);
-    grove_lcd_print(g_lcd, "Hi Min Iam ready");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "feed me token!");
+    lcd_status("Hi Min Iam ready", "feed me token!", 0, 0, 255);
 
     ESP_LOGI(TAG, "执行器已启动, 等待 ROS 2 命令...");
 
@@ -507,12 +569,8 @@ void app_main(void)
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     /* LCD 更新: WiFi 已连接 */
-    grove_lcd_clear(g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 255, 80);
-    grove_lcd_set_cursor(g_lcd, 0, 0);
-    grove_lcd_print(g_lcd, "WiFi Connected!");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "Starting uROS..");
+    lcd_status("[2/6] WiFi", "Connected!", 0, 255, 80);
+    buzzer_beep(1);
 
     /* 启动 micro-ROS 任务 (PIN 到 APP_CPU, PRO_CPU 处理 WiFi) */
     xTaskCreate(micro_ros_task,

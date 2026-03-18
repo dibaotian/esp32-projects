@@ -171,6 +171,9 @@ def print_help():
   scan               舵机扫描 0→180→0
   demo               运行演示序列
   status             查看 ESP32 状态
+  diag               系统诊断 (heap/uptime)
+  diag wifi          WiFi 信号/IP
+  diag task          任务栈水位
   help               显示本帮助
   quit / exit        退出
 ''')
@@ -267,6 +270,17 @@ def main():
                 ctrl.demo()
             elif cmd == 'status':
                 ctrl.status()
+            elif cmd == 'diag':
+                sub = arg.lower().strip()
+                if sub == 'wifi':
+                    ctrl.display(-11)
+                    print('  → 诊断: WiFi (查看 LCD + 串口)')
+                elif sub == 'task':
+                    ctrl.display(-12)
+                    print('  → 诊断: 任务栈 (查看 LCD + 串口)')
+                else:
+                    ctrl.display(-10)
+                    print('  → 诊断: 系统 (查看 LCD + 串口)')
             else:
                 print(f'  未知命令: {cmd} (输入 help 查看帮助)')
 
