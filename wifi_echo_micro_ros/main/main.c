@@ -94,6 +94,7 @@ static rcl_subscription_t sub_servo_cmd;
 static rcl_subscription_t sub_buzzer_cmd;
 static rcl_subscription_t sub_display_cmd;
 static rcl_subscription_t sub_lcd_cmd;
+static rcl_subscription_t sub_melody_cmd;
 
 /* ---- 消息缓冲 ---- */
 static std_msgs__msg__Int32   msg_heartbeat;
@@ -102,9 +103,16 @@ static std_msgs__msg__Float32 msg_servo_cmd;
 static std_msgs__msg__Int32   msg_buzzer_cmd;
 static std_msgs__msg__Int32   msg_display_cmd;
 static std_msgs__msg__String  msg_lcd_cmd;
+static std_msgs__msg__String  msg_melody_cmd;
 
 /* LCD 消息接收缓冲 (静态分配, 避免动态内存) */
 static char lcd_cmd_buf[64];
+
+/* 在线旋律缓冲 (回调写入 → hw_worker 读取解析播放) */
+#define MELODY_BUF_SIZE 1024
+static char melody_cmd_buf[MELODY_BUF_SIZE];
+static char g_melody_data[MELODY_BUF_SIZE];
+static volatile bool g_melody_pending = false;
 
 /* ================================================================
  *  硬件命令队列 (非阻塞回调 → worker 任务执行)
@@ -118,6 +126,7 @@ typedef enum {
     HW_CMD_BUZZER,
     HW_CMD_DISPLAY,
     HW_CMD_LCD,
+    HW_CMD_MELODY,
 } hw_cmd_type_t;
 
 typedef struct {
@@ -170,10 +179,26 @@ static void hw_worker_task(void *arg)
         switch (cmd.type) {
         case HW_CMD_SERVO: {
             float angle = cmd.servo_angle;
-            if (angle < 0.0f)   angle = 0.0f;
-            if (angle > 180.0f) angle = 180.0f;
-            ESP_LOGI(TAG, "舵机命令: %.1f°", angle);
-            servo_set_angle(g_servo, angle);
+            if (angle == -1.0f || angle == -2.0f) {
+                /* 本地扫描: -1=慢(2°/20ms), -2=快(10°/20ms) */
+                int step = (angle == -1.0f) ? 2 : 10;
+                ESP_LOGI(TAG, "舵机扫描: step=%d°", step);
+                for (int a = 0; a <= 180; a += step) {
+                    servo_set_angle(g_servo, (float)a);
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                for (int a = 180; a >= 0; a -= step) {
+                    servo_set_angle(g_servo, (float)a);
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                servo_set_angle(g_servo, 90.0f);
+                ESP_LOGI(TAG, "舵机扫描完成");
+            } else {
+                if (angle < 0.0f)   angle = 0.0f;
+                if (angle > 180.0f) angle = 180.0f;
+                ESP_LOGI(TAG, "舵机命令: %.1f°", angle);
+                servo_set_angle(g_servo, angle);
+            }
             break;
         }
         case HW_CMD_BUZZER: {
@@ -263,6 +288,44 @@ static void hw_worker_task(void *arg)
             }
             break;
         }
+        case HW_CMD_MELODY: {
+            /* 在线旋律播放: 从 g_melody_data 解析 "P30|freq,dur;freq,dur;..." */
+            char *data = g_melody_data;
+            uint32_t pause_ms = 30;  /* 默认音符间隔 */
+
+            /* 解析可选 pause 前缀 "P30|" */
+            if (data[0] == 'P' || data[0] == 'p') {
+                char *pipe = strchr(data, '|');
+                if (pipe) {
+                    pause_ms = (uint32_t)atoi(data + 1);
+                    data = pipe + 1;
+                }
+            }
+
+            ESP_LOGI(TAG, "在线旋律: pause=%lums, len=%d",
+                     (unsigned long)pause_ms, (int)strlen(data));
+
+            /* 解析并逐个播放音符 */
+            int note_count = 0;
+            char *saveptr = NULL;
+            char *token = strtok_r(data, ";", &saveptr);
+            while (token) {
+                uint32_t freq = 0, dur = 0;
+                if (sscanf(token, "%lu,%lu",
+                           (unsigned long *)&freq,
+                           (unsigned long *)&dur) == 2 && dur > 0) {
+                    buzzer_tone_ms(freq, dur);
+                    if (pause_ms > 0) {
+                        vTaskDelay(pdMS_TO_TICKS(pause_ms));
+                    }
+                    note_count++;
+                }
+                token = strtok_r(NULL, ";", &saveptr);
+            }
+            g_melody_pending = false;
+            ESP_LOGI(TAG, "在线旋律完成: %d 个音符", note_count);
+            break;
+        }
         }
     }
 }
@@ -313,6 +376,25 @@ static void lcd_cmd_callback(const void *msgin)
                         ? msg->data.size : sizeof(cmd.lcd_text) - 1;
         memcpy(cmd.lcd_text, msg->data.data, copy_len);
         cmd.lcd_text[copy_len] = '\0';
+        xQueueSend(g_hw_queue, &cmd, 0);
+    }
+}
+
+/*
+ * /esp32/melody_cmd (String) → 在线旋律播放
+ * 格式: "P30|freq,dur;freq,dur;..."  (P30=音符间隔30ms, 可选)
+ * 例: "262,300;262,300;392,300;392,300;440,300;440,300;392,500"
+ */
+static void melody_cmd_callback(const void *msgin)
+{
+    const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
+    if (msg->data.data && msg->data.size > 0 && !g_melody_pending) {
+        size_t copy_len = msg->data.size < MELODY_BUF_SIZE - 1
+                        ? msg->data.size : MELODY_BUF_SIZE - 1;
+        memcpy(g_melody_data, msg->data.data, copy_len);
+        g_melody_data[copy_len] = '\0';
+        g_melody_pending = true;
+        hw_cmd_t cmd = { .type = HW_CMD_MELODY };
         xQueueSend(g_hw_queue, &cmd, 0);
     }
 }
@@ -524,13 +606,20 @@ static void micro_ros_task(void *arg)
         "/esp32/lcd_cmd"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 7/8: sub lcd_cmd");
 
+    vTaskDelay(pdMS_TO_TICKS(200));
+    RCCHECK_RETRY(rclc_subscription_init_default(
+        &sub_melody_cmd, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+        "/esp32/melody_cmd"), 3);
+    ESP_LOGI(TAG, "[4/6] Entity 8/9: sub melody_cmd");
+
     /* ---- 心跳定时器 (5 秒) ---- */
     rcl_timer_t timer;
     RCCHECK_RETRY(rclc_timer_init_default2(
         &timer, &support,
         RCL_MS_TO_NS(5000),
         heartbeat_timer_callback, true), 3);
-    ESP_LOGI(TAG, "[4/6] Entity 8/8: timer created");
+    ESP_LOGI(TAG, "[4/6] Entity 9/9: timer created");
 
     /* 实体创建成功, 停止看门狗 */
     xTimerStop(wd_timer, 0);
@@ -542,12 +631,17 @@ static void micro_ros_task(void *arg)
     msg_lcd_cmd.data.size = 0;
     msg_lcd_cmd.data.capacity = sizeof(lcd_cmd_buf);
 
-    /* ---- 执行器: 4 subscribers + 1 timer = 5 handles ---- */
+    /* 预分配 melody_cmd String 缓冲 */
+    msg_melody_cmd.data.data = melody_cmd_buf;
+    msg_melody_cmd.data.size = 0;
+    msg_melody_cmd.data.capacity = sizeof(melody_cmd_buf);
+
+    /* ---- 执行器: 5 subscribers + 1 timer = 6 handles ---- */
     /* 实体创建完毕, 现在可以安全更新 LCD */
     lcd_status("[5/6] Executor", "Starting...", 0, 150, 255);
     vTaskDelay(pdMS_TO_TICKS(100));
     rclc_executor_t executor;
-    RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
+    RCCHECK(rclc_executor_init(&executor, &support.context, 6, &allocator));
     RCCHECK(rclc_executor_add_subscription(
         &executor, &sub_servo_cmd, &msg_servo_cmd,
         servo_cmd_callback, ON_NEW_DATA));
@@ -560,6 +654,9 @@ static void micro_ros_task(void *arg)
     RCCHECK(rclc_executor_add_subscription(
         &executor, &sub_lcd_cmd, &msg_lcd_cmd,
         lcd_cmd_callback, ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(
+        &executor, &sub_melody_cmd, &msg_melody_cmd,
+        melody_cmd_callback, ON_NEW_DATA));
     RCCHECK(rclc_executor_add_timer(&executor, &timer));
 
     /* 全部就绪 */

@@ -221,3 +221,7 @@ esp_err_t buzzer_play_error(void)
     };
     return buzzer_play_melody(melody, sizeof(melody) / sizeof(melody[0]), 0);
 }
+
+
+
+
