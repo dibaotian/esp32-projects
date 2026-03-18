@@ -40,6 +40,8 @@
 #include "tm1637.h"
 #include "grove_lcd.h"
 
+#include "esp_wifi.h"
+
 #define TAG "UROS_CTRL"
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; \
@@ -329,6 +331,9 @@ static void micro_ros_task(void *arg)
     } while (rc != RCL_RET_OK);
     ESP_LOGI(TAG, "Agent 已连接! (第 %d 次尝试)", attempt);
 
+    /* 等待 XRCE-DDS 会话稳定 */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
     /* 创建节点: /esp32/esp32_controller */
     rcl_node_t node;
     RCCHECK(rclc_node_init_default(&node, "esp32_controller", "esp32",
@@ -336,32 +341,38 @@ static void micro_ros_task(void *arg)
     ESP_LOGI(TAG, "micro-ROS 节点已创建");
 
     /* ---- 发布者 ---- */
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_publisher_init_default(
         &pub_heartbeat, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/heartbeat"));
 
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_publisher_init_default(
         &pub_servo_state, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_state"));
 
     /* ---- 订阅者 ---- */
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_servo_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_cmd"));
 
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_buzzer_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/buzzer_cmd"));
 
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_display_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/display_cmd"));
 
+    vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_lcd_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
@@ -409,6 +420,15 @@ static void micro_ros_task(void *arg)
     /* 启动硬件 worker 任务 (从队列取命令, 允许阻塞) */
     g_hw_queue = xQueueCreate(8, sizeof(hw_cmd_t));
     xTaskCreate(hw_worker_task, "hw_worker", 4096, NULL, 4, NULL);
+
+    /* 5 秒后切换到自定义欢迎消息 */
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    grove_lcd_clear(g_lcd);
+    grove_lcd_set_rgb(g_lcd, 0, 0, 255);
+    grove_lcd_set_cursor(g_lcd, 0, 0);
+    grove_lcd_print(g_lcd, "Hi Min Iam ready");
+    grove_lcd_set_cursor(g_lcd, 0, 1);
+    grove_lcd_print(g_lcd, "feed me token!");
 
     ESP_LOGI(TAG, "执行器已启动, 等待 ROS 2 命令...");
 
@@ -468,6 +488,9 @@ void app_main(void)
 #endif
     ESP_LOGI(TAG, "WiFi 已连接, 启动 micro-ROS 任务");
 
+    /* 禁用 WiFi 省电, 确保 UDP 稳定 */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     /* LCD 更新: WiFi 已连接 */
     grove_lcd_clear(g_lcd);
     grove_lcd_set_rgb(g_lcd, 0, 255, 80);
@@ -475,15 +498,6 @@ void app_main(void)
     grove_lcd_print(g_lcd, "WiFi Connected!");
     grove_lcd_set_cursor(g_lcd, 0, 1);
     grove_lcd_print(g_lcd, "Starting uROS..");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-
-    /* 5 秒后切换到自定义欢迎消息 */
-    grove_lcd_clear(g_lcd);
-    grove_lcd_set_rgb(g_lcd, 0, 0, 255);
-    grove_lcd_set_cursor(g_lcd, 0, 0);
-    grove_lcd_print(g_lcd, "Hi Min Iam ready");
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, "feed me token!");
 
     /* 启动 micro-ROS 任务 (PIN 到 APP_CPU, PRO_CPU 处理 WiFi) */
     xTaskCreate(micro_ros_task,
