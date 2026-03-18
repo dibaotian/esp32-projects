@@ -417,9 +417,11 @@ static void micro_ros_task(void *arg)
     tm1637_show_string(g_tm1637, "GO  ");
     buzzer_play_success();
 
-    /* 启动硬件 worker 任务 (从队列取命令, 允许阻塞) */
+    /* 启动硬件 worker 任务 (从队列取命令, 允许阻塞)
+     * 优先级 6 > uros_task(5): 命令入队后 hw_worker 立即抢占执行,
+     * 保证硬件响应零延迟, 不被 executor 轮询循环阻塞 */
     g_hw_queue = xQueueCreate(8, sizeof(hw_cmd_t));
-    xTaskCreate(hw_worker_task, "hw_worker", 4096, NULL, 4, NULL);
+    xTaskCreate(hw_worker_task, "hw_worker", 4096, NULL, 6, NULL);
 
     /* 5 秒后切换到自定义欢迎消息 */
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -432,10 +434,15 @@ static void micro_ros_task(void *arg)
 
     ESP_LOGI(TAG, "执行器已启动, 等待 ROS 2 命令...");
 
-    /* 主循环 */
+    /* 主循环:
+     * spin_some(20ms) — 无消息时 rmw_wait 最多阻塞 20ms, 有消息立即返回
+     * vTaskDelay(1) — 让出 1 tick (10ms @ 100Hz), 确保低优先级任务能运行
+     * 注意: usleep(<10ms) 在 100Hz tick 下是 busy-wait 不让出 CPU!
+     * 响应延迟不受 vTaskDelay 影响: hw_worker(优先级6) 在 xQueueSend 后
+     * 立即抢占 uros_task(优先级5), vTaskDelay 在命令执行后才触发 */
     while (1) {
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
-        usleep(10000);
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(20));
+        vTaskDelay(1);
     }
 
     /* 清理 (正常不会到达) */
