@@ -334,6 +334,15 @@ static void lcd_status(const char *line1, const char *line2,
     grove_lcd_print(g_lcd, line2);
 }
 
+/* 更新 LCD 第二行 (不清屏, 无 busy-wait, XRCE-DDS 安全) */
+static void lcd_line2(const char *text)
+{
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%-16s", text);
+    grove_lcd_set_cursor(g_lcd, 0, 1);
+    grove_lcd_print(g_lcd, buf);
+}
+
 /* ================================================================
  *  开机动画
  * ================================================================ */
@@ -433,13 +442,16 @@ static void micro_ros_task(void *arg)
      * 注意: 实体创建期间不能调用 lcd_status (grove_lcd_clear 有 2ms busy-wait,
      * 会阻塞 XRCE-DDS 会话维护导致实体创建失败).
      * LCD 只在整个创建块之前/之后更新. */
-    lcd_status("[4/6] ROS2", "Creating node..", 0, 150, 255);
+    lcd_status("[4/6] ROS2", "Node..      [0/8]", 0, 150, 255);
     vTaskDelay(pdMS_TO_TICKS(100));  /* 让 LCD I2C 完成 */
 
+    /* 实体创建: 用 lcd_line2 显示进度 (无 grove_lcd_clear, 无 busy-wait,
+     * 不会阻塞 XRCE-DDS 会话维护) */
     rcl_node_t node;
     RCCHECK(rclc_node_init_default(&node, "esp32_controller", "esp32",
                                    &support));
     ESP_LOGI(TAG, "micro-ROS 节点已创建");
+    lcd_line2("Node OK   [1/8]");
 
     /* ---- 发布者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -447,12 +459,14 @@ static void micro_ros_task(void *arg)
         &pub_heartbeat, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/heartbeat"));
+    lcd_line2("Pub hbeat [2/8]");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_publisher_init_default(
         &pub_servo_state, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_state"));
+    lcd_line2("Pub servo [3/8]");
 
     /* ---- 订阅者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -460,24 +474,28 @@ static void micro_ros_task(void *arg)
         &sub_servo_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_cmd"));
+    lcd_line2("Sub servo [4/8]");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_buzzer_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/buzzer_cmd"));
+    lcd_line2("Sub buzz  [5/8]");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_display_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/display_cmd"));
+    lcd_line2("Sub disp  [6/8]");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_lcd_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/esp32/lcd_cmd"));
+    lcd_line2("Sub lcd   [7/8]");
 
     /* ---- 心跳定时器 (5 秒) ---- */
     rcl_timer_t timer;
@@ -485,6 +503,7 @@ static void micro_ros_task(void *arg)
         &timer, &support,
         RCL_MS_TO_NS(5000),
         heartbeat_timer_callback, true));
+    lcd_line2("Timer     [8/8]");
 
     /* 预分配 lcd_cmd String 缓冲 (避免动态内存) */
     msg_lcd_cmd.data.data = lcd_cmd_buf;
