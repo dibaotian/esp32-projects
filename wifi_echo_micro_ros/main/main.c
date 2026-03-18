@@ -117,13 +117,37 @@ static QueueHandle_t g_hw_queue = NULL;
 static void lcd_status(const char *line1, const char *line2,
                        uint8_t r, uint8_t g, uint8_t b);
 
+/* 空闲超时: 5 分钟无命令则 LCD 显示待机消息 */
+#define IDLE_TIMEOUT_MS  (5 * 60 * 1000)
+#define IDLE_POLL_MS     10000          /* 每 10 秒检查一次 */
+
 /* Worker 任务: 从队列取命令, 执行硬件操作 (允许阻塞) */
 static void hw_worker_task(void *arg)
 {
     hw_cmd_t cmd;
+    TickType_t last_cmd_tick = xTaskGetTickCount();
+    bool idle_shown = false;
+
     while (1) {
-        if (xQueueReceive(g_hw_queue, &cmd, portMAX_DELAY) != pdTRUE)
+        BaseType_t got = xQueueReceive(g_hw_queue, &cmd,
+                                       pdMS_TO_TICKS(IDLE_POLL_MS));
+        if (got != pdTRUE) {
+            /* 队列超时 — 检查空闲时间 */
+            TickType_t elapsed = (xTaskGetTickCount() - last_cmd_tick)
+                                 * portTICK_PERIOD_MS;
+            if (!idle_shown && elapsed >= IDLE_TIMEOUT_MS) {
+                ESP_LOGI(TAG, "Idle %lu ms, showing standby message",
+                         (unsigned long)elapsed);
+                lcd_status("Hi Min!  ^-^",
+                           "Feed Me Token!", 0, 255, 100);
+                idle_shown = true;
+            }
             continue;
+        }
+        /* 收到命令 — 重置空闲计时 */
+        last_cmd_tick = xTaskGetTickCount();
+        idle_shown = false;
+
         switch (cmd.type) {
         case HW_CMD_SERVO: {
             float angle = cmd.servo_angle;
