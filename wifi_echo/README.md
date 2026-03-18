@@ -21,6 +21,152 @@ ESP32 作为 WiFi AP + TCP 服务器，通过 **JSON 协议** 远程控制 5 个
                                       └──────────────────────────┘
 ```
 
+## 软件架构
+
+### FreeRTOS 任务模型
+
+ESP-IDF 基于 FreeRTOS 实时操作系统，使用多任务并发架构。ESP32 双核 (PRO_CPU + APP_CPU)，FreeRTOS 调度器自动在两核间分配任务。
+
+#### 运行时任务一览
+
+| 任务名 | 栈大小 | 优先级 | 生命周期 | 说明 |
+|--------|--------|--------|----------|------|
+| `main` (app_main) | 系统默认 | 1 | 启动后返回 | 初始化所有外设，启动开机动画，创建后续任务 |
+| `tcp_server` | 4096 B | 5 | 常驻 | TCP 监听，accept 新连接后创建 client 任务 |
+| `client` | 8192 B | 5 | 连接期间 | 每个 TCP 客户端一个独立任务，断开后自动删除 |
+| `tm_anim` | 2048 B | 3 | 开机动画 | 数码管开机动画 (~10s)，完成后自删除 |
+| `sv_anim` | 2048 B | 3 | 开机动画 | 舵机开机动画 (~10s)，完成后自删除 |
+| ESP 系统任务 | — | — | 常驻 | WiFi、lwIP、事件循环等由 ESP-IDF 自动管理 |
+
+#### 启动流程
+
+```
+芯片上电 / 复位
+    │
+    ▼
+Bootloader (0x1000)
+    │  加载分区表 → 加载 app 固件
+    ▼
+ESP-IDF 系统初始化
+    │  FreeRTOS 调度器启动
+    │  创建系统任务 (WiFi, lwIP, 事件循环)
+    ▼
+app_main() 任务开始
+    │
+    ├─ 1. NVS Flash 初始化          ← 存储 WiFi 配置等参数
+    ├─ 2. buzzer_init()             ← LEDC 定时器 + PWM 通道配置
+    ├─ 3. servo_init()              ← LEDC 定时器 + 50Hz PWM 配置
+    ├─ 4. tm1637_init()             ← GPIO 配置 (CLK/DIO)
+    ├─ 5. grove_lcd_init()          ← I2C 总线初始化
+    │
+    ├─ 6. 创建开机动画任务 (并行)
+    │     ├─ tm_anim   任务  ← 数码管动画: 脉冲→解码→锁定→呼吸
+    │     ├─ sv_anim   任务  ← 舵机动画:   扫描→探测→抖动→归位
+    │     └─ 主线程 LCD 动画  ← LCD 动画:   彩虹→打字机→渐变
+    │
+    ├─ 7. 等待所有动画完成
+    ├─ 8. wifi_init_softap()        ← 创建 WiFi AP 热点
+    ├─ 9. 创建 tcp_server 任务      ← 启动 TCP 监听
+    └─ 10. buzzer_beep(2)           ← 就绪提示音，app_main 返回
+```
+
+### 网络协议栈
+
+```
+┌──────────────────────────────────────────────┐
+│                 应用层                        │
+│   cmd_dispatch() — JSON 命令解析与模块分发      │
+├──────────────────────────────────────────────┤
+│                 传输层                        │
+│   TCP (lwIP) — 端口 3333, SO_REUSEADDR       │
+│   accept() → 每连接创建 FreeRTOS 任务          │
+├──────────────────────────────────────────────┤
+│                 网络层                        │
+│   IPv4 — ESP32 AP IP: 192.168.4.1            │
+│   DHCP Server — 为客户端分配 192.168.4.2~5    │
+├──────────────────────────────────────────────┤
+│               WiFi 链路层                     │
+│   ESP32 SoftAP — WPA2-PSK, Channel 6         │
+│   最多 4 个 STA 客户端并发连接                  │
+├──────────────────────────────────────────────┤
+│                 硬件                          │
+│   ESP32 内置 WiFi (802.11 b/g/n, 2.4 GHz)    │
+└──────────────────────────────────────────────┘
+```
+
+### 命令处理流水线
+
+TCP 数据到达后的处理流程，全部在 `client` 任务上下文中同步执行：
+
+```
+recv(sock)
+    │
+    ▼
+去除尾部 \r\n
+    │
+    ▼
+首字符 == '{' ?
+    │
+    ├─ 否 → 回声模式: 回复 "收到: <原文>\n"
+    │
+    └─ 是 → cmd_dispatch(json_str, g_modules)
+                │
+                ├─ cJSON_Parse()         ← 解析 JSON
+                ├─ 提取 cmd + act 字段
+                ├─ 遍历 g_modules[] 查找模块
+                │       │
+                │       ├─ "buzzer"  → cmd_buzzer_handler()
+                │       ├─ "servo"   → cmd_servo_handler()
+                │       ├─ "display" → cmd_display_handler()
+                │       ├─ "lcd"     → cmd_lcd_handler()
+                │       └─ "sys"     → cmd_sys_handler()
+                │
+                ├─ handler 操作硬件 + 填充 resp JSON
+                ├─ cJSON_PrintUnformatted(resp)
+                └─ 返回 JSON 字符串 → send(sock)
+```
+
+### 模块注册表
+
+采用静态数组 + 终止标记模式，零堆分配，编译期确定：
+
+```c
+static const cmd_module_t g_modules[] = {
+    { "buzzer",  cmd_buzzer_handler  },   // 蜂鸣器
+    { "servo",   cmd_servo_handler   },   // 舵机
+    { "display", cmd_display_handler },   // 数码管
+    { "lcd",     cmd_lcd_handler     },   // LCD
+    { "sys",     cmd_sys_handler     },   // 系统
+    { NULL, NULL }                        // 终止标记
+};
+```
+
+每个 handler 签名统一：
+```c
+esp_err_t handler(const char *action, const cJSON *req, cJSON *resp);
+// 返回 ESP_OK → status: "ok"
+// 返回 ESP_ERR_NOT_FOUND → "未知动作"
+// 返回其他 → "error" + esp_err_to_name()
+```
+
+### 外设驱动层
+
+| 组件 | 驱动方式 | ESP-IDF API | 全局句柄 |
+|------|----------|-------------|----------|
+| 蜂鸣器 | LEDC PWM | `ledc_timer_config` + `ledc_channel_config` | 无 (全局函数) |
+| 舵机 | LEDC PWM 50Hz | `ledc_timer_config` (分辨率 16bit) | `g_servo` |
+| TM1637 | GPIO 位操作 | `gpio_set_direction` + `gpio_set_level` | `g_tm1637` |
+| Grove LCD | I2C 总线 | `i2c_master_bus_add_device` | `g_lcd` |
+
+驱动句柄在 `app_main()` 中创建，通过全局变量 (`extern`) 传递给 `cmd_xxx.c` 命令处理文件。
+
+### 并发与同步
+
+- **TCP 客户端隔离**：每个客户端运行在独立 FreeRTOS 任务中，互不阻塞
+- **命令串行执行**：同一客户端的命令在其任务内顺序处理（`smooth`、`sweep`、`tone` 等阻塞命令会阻塞当前客户端）
+- **跨客户端竞争**：多个客户端同时操作同一外设时无互斥锁，后到的命令直接覆盖（硬件无损，但行为不确定）
+- **开机动画同步**：`tm_anim` 和 `sv_anim` 通过 `volatile bool` 标志通知主线程完成，主线程轮询等待后再启动 WiFi
+
 ## 硬件配置
 
 | 组件 | GPIO | 说明 |

@@ -10,10 +10,9 @@
 - [6. 双网络配置（有线 Internet + WiFi 控制 ESP32）](#6-双网络配置有线-internet--wifi-控制-esp32)
 - [7. 客户端工具](#7-客户端工具)
 - [8. 常用命令速查](#8-常用命令速查)
-- [9. 蓝牙适配器问题排查记录](#9-蓝牙适配器问题排查记录)
-- [10. 通信距离参考](#10-通信距离参考)
-- [11. 项目文件结构](#11-项目文件结构)
-- [12. 故障排查](#12-故障排查)
+- [9. 通信距离参考](#9-通信距离参考)
+- [10. 项目文件结构](#10-项目文件结构)
+- [11. 故障排查](#11-故障排查)
 
 ---
 
@@ -25,10 +24,10 @@
 |---|---|
 | 操作系统 | Ubuntu 24.04 LTS (Noble Numbat) |
 | 内核版本 | 6.17.0-19-generic |
-| 有线网卡 | eno1 (10.161.176.50/24, 网关 10.161.176.254) |
+| 有线网卡 | eno1 (10.161.176.50/24, 网关 10.161.176.xxx) |
 | 无线网卡 | wlp195s0 (MediaTek MT7925, PCIe, 驱动 mt7925e) |
 | WiFi 芯片 | MediaTek MT7925 (PCI ID: 14c3:0717) |
-| 蓝牙状态 | 硬件支持但 USB 通道故障 (详见第 9 节) |
+| 蓝牙状态 | 正常工作 |
 | ESP-IDF 版本 | v5.4 |
 | ESP-IDF 路径 | ~/esp/esp-idf |
 
@@ -562,258 +561,7 @@ python3 -c "import socket; s=socket.socket(); s.connect(('192.168.4.1',3333)); s
 
 ---
 
-## 9. 蓝牙适配器问题排查记录
-
-### 问题现象
-
-MT7925 网卡是 WiFi/BT combo 芯片，WiFi 正常工作但蓝牙无法使用。`hcitool dev` 始终为空。
-
-### 诊断步骤与调试命令
-
-#### Step 1: 检查是否有蓝牙 HCI 设备
-
-```bash
-hcitool dev
-# 正常应该输出 hci0 + MAC 地址
-# 本机结果: Devices: (空)
-```
-
-#### Step 2: 检查蓝牙内核模块
-
-```bash
-lsmod | grep -iE "bluetooth|btusb|btmtk|btintel|btrtl"
-```
-
-本机结果: 全部已加载 ✅
-```
-btusb     77824  0
-btrtl     32768  1 btusb
-btintel   69632  1 btusb
-btbcm     24576  1 btusb
-btmtk     36864  1 btusb
-bluetooth 1032192 5 btrtl,btmtk,btintel,btbcm,btusb
-```
-
-如果模块未加载，手动加载：
-```bash
-sudo modprobe bluetooth
-sudo modprobe btusb
-```
-
-#### Step 3: 检查蓝牙服务
-
-```bash
-systemctl is-active bluetooth
-# 如果是 inactive:
-sudo systemctl start bluetooth
-sudo systemctl enable bluetooth
-```
-
-#### Step 4: 检查 USB 蓝牙设备
-
-```bash
-# 查看所有 USB 设备
-lsusb
-
-# 搜索已知蓝牙芯片
-lsusb | grep -iE "bluetooth|wireless|radio|bt"
-
-# 查看 MediaTek USB 设备 (combo 芯片蓝牙走 USB)
-lsusb -d 0e8d:    # MediaTek VID
-lsusb -d 14c3:    # MediaTek 另一个 VID
-
-# 查看 USB 设备树
-lsusb -t
-```
-
-本机结果: 无任何蓝牙 USB 设备出现 ❌
-
-#### Step 5: 检查 dmesg 内核日志（关键步骤）
-
-```bash
-# 查看所有蓝牙相关日志
-sudo dmesg | grep -iE "bluetooth|btusb|btmtk|hci"
-
-# 查看 USB 枚举错误
-sudo dmesg | grep -iE "usb 3-3|unable to enumerate"
-
-# 查看 MT7925 驱动日志
-sudo dmesg | grep -iE "mt7925|mt792x|14c3"
-```
-
-本机关键错误日志:
-```
-[  4.411740] usb 3-3: new high-speed USB device number 3 using xhci_hcd
-[ 10.001750] usb 3-3: device descriptor read/64, error -110       ← USB 读取超时
-[ 25.873769] usb 3-3: device descriptor read/64, error -110
-[ 47.860719] usb 3-3: new high-speed USB device number 5 using xhci_hcd
-[ 58.737716] usb 3-3: device not accepting address 5, error -62   ← 设备不接受地址
-[ 70.001629] usb 3-3: device not accepting address 6, error -62
-[ 70.001847] usb usb3-port3: unable to enumerate USB device        ← 最终枚举失败
-```
-
-**错误码含义:**
-| 错误码 | 含义 | 可能原因 |
-|---|---|---|
-| error -110 | ETIMEDOUT，USB 操作超时 | 信号线接触不良、供电不足、设备损坏 |
-| error -62 | ETIME，定时器超时 | USB 设备无响应 |
-| error -71 | EPROTO，协议错误 | 信号质量差或驱动不匹配 |
-| error -32 | EPIPE，管道错误 | 端点停止或设备异常 |
-
-#### Step 6: 检查网卡硬件信息
-
-```bash
-# 查看 MT7925 PCIe 设备详情
-lspci -vvnn -s c3:00.0
-
-# 确认驱动是否加载
-lspci -k -s c3:00.0
-# 输出: Kernel driver in use: mt7925e
-
-# 查看 WiFi 固件版本
-sudo dmesg | grep "mt7925.*Version"
-# HW/SW Version: 0x8a108a10, Build Time: 20251210092928a
-# WM Firmware Version: ____000000, Build Time: 20251210093025
-```
-
-#### Step 7: 检查蓝牙固件文件
-
-```bash
-# MT7925 蓝牙固件
-ls -la /lib/firmware/mediatek/mt7925/
-# BT_RAM_CODE_MT7925_1_1_hdr.bin       (新版，已从上游更新)
-# BT_RAM_CODE_MT7925_1_1_hdr.bin.zst   (旧版压缩包)
-# BT_RAM_CODE_MT7925_1_1_hdr.bin.zst.bak (备份)
-
-# 查看通用蓝牙固件
-ls /lib/firmware/mediatek/ | grep -i bt
-```
-
-#### Step 8: rfkill 检查（软/硬件开关）
-
-```bash
-rfkill list
-# 如果蓝牙被 blocked:
-sudo rfkill unblock bluetooth
-```
-
-本机结果: rfkill 列表中没有蓝牙设备（因为 HCI 未注册）
-
-### 根因分析
-
-```
-MT7925 M.2 网卡 (WiFi/BT Combo)
-┌─────────────────────────────────────┐
-│  WiFi 模块  ──── PCIe 通道 ──── 主板 PCIe 插槽  ✅ 正常
-│                                     │
-│  BT 模块    ──── USB 通道  ──── M.2 USB 信号线  ❌ 故障
-│                                     │
-│  问题: M.2 插槽的 USB 信号未正确连接  │
-│  或 USB 信号线接触不良               │
-└─────────────────────────────────────┘
-```
-
-MT7925 是 WiFi/BT combo 芯片：
-- **WiFi** 走 PCIe 通道 → 工作正常 (`mt7925e` 驱动加载成功)
-- **蓝牙** 走 USB 内部通道 → USB 枚举失败
-- 故障发生在 USB 物理层，在蓝牙固件加载之前，因此更新固件无法解决
-
-### 已尝试的修复
-
-| 操作 | 结果 | 说明 |
-|---|---|---|
-| `sudo modprobe btusb bluetooth` | ❌ 模块加载但无设备 | 内核模块正常，问题在硬件层 |
-| 重启系统 | ❌ 仍然枚举失败 | 每次开机均重试 10 次失败 |
-| 更新 BT 固件 (从上游 linux-firmware) | ❌ 无效 | USB 通道断了，固件无法传输到芯片 |
-| `sudo systemctl start bluetooth` | ✅ 服务启动 | 但无 HCI 设备可操作 |
-| `sudo rfkill unblock bluetooth` | ❌ 无蓝牙设备可 unblock | HCI 未注册 |
-
-### 解决方案
-
-| 方案 | 可行性 | 说明 |
-|---|---|---|
-| **买 USB 蓝牙适配器** | ✅ 推荐 | CSR8510 (~15元) 或 RTL8761B (~30元)，Linux 免驱 |
-| 重新插拔 M.2 网卡 | 可能有效 | 关机断电，清洁金手指，重新对齐插入 |
-| 检查 BIOS 蓝牙选项 | 可能有效 | 部分主板可独立启用/禁用蓝牙 |
-| 检查 M.2 USB 排线 | 可能有效 | 部分 PCIe WiFi 卡需要额外 USB 排线连主板 |
-| **改用 WiFi 方案** | ✅ 已实现 | ESP32 做热点，TCP 通信代替蓝牙 |
-
-### 如果买了 USB 蓝牙适配器后的验证步骤
-
-```bash
-# 1. 插入适配器
-# 2. 检查是否识别
-lsusb | grep -i bluetooth
-hcitool dev          # 应看到 hci0
-
-# 3. 启动蓝牙服务
-sudo systemctl start bluetooth
-
-# 4. 扫描 ESP32 (需先烧录 bt_echo 固件)
-bluetoothctl
-> power on
-> scan on
-# 等待看到 ESP32-Echo (FC:F5:C4:16:24:A6)
-> scan off
-> pair FC:F5:C4:16:24:A6
-# 输入 PIN: 1234 (如果提示)
-> trust FC:F5:C4:16:24:A6
-> quit
-
-# 5. 运行蓝牙客户端
-python3 ~/Documents/esp32/bt_echo/bt_client.py
-```
-
-### 实用调试命令汇总
-
-```bash
-# === 蓝牙状态总览 ===
-hcitool dev                              # 列出 HCI 设备
-bluetoothctl show                        # 蓝牙适配器详情
-systemctl status bluetooth               # 蓝牙服务状态
-
-# === 内核模块 ===
-lsmod | grep -iE "bt|bluetooth"          # 已加载的蓝牙模块
-sudo modprobe btusb                      # 加载 btusb 驱动
-sudo modprobe -r btusb && sudo modprobe btusb  # 重载驱动
-
-# === USB 设备 ===
-lsusb                                    # 列出 USB 设备
-lsusb -t                                 # USB 设备树
-lsusb -v -d xxxx:xxxx                    # 特定设备详情
-
-# === 内核日志 ===
-sudo dmesg | grep -iE "bluetooth|btusb|btmtk|hci"  # 蓝牙日志
-sudo dmesg | grep "usb.*error"           # USB 错误
-sudo dmesg -w                            # 实时监控 (插拔设备时用)
-
-# === 射频开关 ===
-rfkill list                              # 列出所有无线设备
-sudo rfkill unblock bluetooth            # 解除蓝牙软屏蔽
-
-# === 固件 ===
-ls /lib/firmware/mediatek/mt7925/        # MT7925 固件文件
-ls /lib/firmware/intel/                   # Intel 蓝牙固件
-ls /lib/firmware/rtl_bt/                  # Realtek 蓝牙固件
-
-# === bluetoothctl 交互调试 ===
-bluetoothctl
-> power on                               # 开启蓝牙
-> agent on                               # 启用配对代理
-> default-agent                           # 设为默认代理
-> scan on                                # 开始扫描
-> devices                                # 列出发现的设备
-> pair XX:XX:XX:XX:XX:XX                 # 配对
-> trust XX:XX:XX:XX:XX:XX                # 信任
-> connect XX:XX:XX:XX:XX:XX              # 连接
-> info XX:XX:XX:XX:XX:XX                 # 设备详情
-> remove XX:XX:XX:XX:XX:XX               # 移除配对
-> quit
-```
-
----
-
-## 10. 通信距离参考
+## 9. 通信距离参考
 
 ### ESP32-DevKitC (PCB 板载天线) 实际距离
 
@@ -847,13 +595,27 @@ bluetoothctl
 
 ---
 
-## 11. 项目文件结构
+## 10. 项目文件结构
 
 ```
 ~/Documents/esp32/
 ├── README_ESP32_SETUP.md       # 本文档
+├── README.md                   # 项目总览
+├── MCP_SERVER.md               # MCP 服务器文档
+├── AGENT_SKILL_GUIDE.md        # Agent/Skill 使用指南
+├── esp32_mcp_server.py         # ESP32 MCP 服务器
+├── cpu_monitor.py              # CPU 监控脚本
+├── happy_show.py               # 开心动画演示
+├── sad_show.py                 # 悲伤动画演示
+├── play_game.sh                # 游戏启动脚本
 ├── setup_esp32.sh              # 基础环境一键安装脚本
-├── setup_dual_network.sh       # 双网络配置脚本
+├── .vscode/
+│   └── mcp.json                # VS Code MCP 配置
+├── .github/
+│   ├── agents/
+│   │   └── esp32.agent.md      # ESP32 Agent 定义
+│   └── skills/
+│       └── esp32-control/      # ESP32 控制 Skill
 ├── bt_echo/                    # 蓝牙 SPP 回声服务器项目
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults
@@ -861,17 +623,45 @@ bluetoothctl
 │   └── main/
 │       ├── CMakeLists.txt
 │       └── main.c
-└── wifi_echo/                  # WiFi AP + TCP 回声服务器项目
+└── wifi_echo/                  # WiFi AP + TCP JSON 控制服务器项目
     ├── CMakeLists.txt
     ├── sdkconfig.defaults
+    ├── PROTOCOL.md             # JSON 通信协议文档
+    ├── README.md               # wifi_echo 项目说明
     ├── build_flash.sh          # 一键编译烧录
     ├── monitor.sh              # 串口监控
     ├── run.sh                  # 运行 (连WiFi + 客户端)
     ├── stop.sh                 # 停止 (断WiFi + 清路由)
-    ├── wifi_client.py          # WiFi TCP 客户端
-    └── main/
-        ├── CMakeLists.txt
-        └── main.c
+    ├── setup_dual_network.sh   # 双网络配置脚本
+    ├── wifi_client.py          # 交互式 TCP 客户端
+    ├── main/
+    │   ├── CMakeLists.txt
+    │   └── main.c
+    └── components/
+        ├── buzzer/             # 蜂鸣器驱动 (LEDC PWM)
+        │   ├── CMakeLists.txt
+        │   ├── buzzer.c
+        │   └── include/
+        ├── servo/              # 舵机驱动 (LEDC PWM 50Hz)
+        │   ├── CMakeLists.txt
+        │   ├── servo.c
+        │   └── include/
+        ├── tm1637/             # TM1637 四位七段数码管驱动
+        │   ├── CMakeLists.txt
+        │   ├── tm1637.c
+        │   └── include/
+        ├── grove_lcd/          # Grove LCD RGB 16x2 驱动 (I2C)
+        │   ├── CMakeLists.txt
+        │   ├── grove_lcd.c
+        │   └── include/
+        └── cmd_handler/        # JSON 命令解析与模块分发
+            ├── CMakeLists.txt
+            ├── cmd_handler.c   # 核心分发器
+            ├── cmd_buzzer.c    # 蜂鸣器命令
+            ├── cmd_servo.c     # 舵机命令
+            ├── cmd_display.c   # 数码管命令
+            ├── cmd_lcd.c       # LCD 命令
+            └── include/
 
 ~/esp/esp-idf/                  # ESP-IDF SDK (v5.4)
 ~/.espressif/                   # ESP-IDF 工具链
@@ -879,7 +669,7 @@ bluetoothctl
 
 ---
 
-## 12. 故障排查
+## 11. 故障排查
 
 | 问题 | 解决方案 |
 |---|---|
