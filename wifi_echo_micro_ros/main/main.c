@@ -138,7 +138,7 @@ static void hw_worker_task(void *arg)
             if (!idle_shown && elapsed >= IDLE_TIMEOUT_MS) {
                 ESP_LOGI(TAG, "Idle %lu ms, showing standby message",
                          (unsigned long)elapsed);
-                lcd_status("Hi Min!  ^-^",
+                lcd_status("Hi Min I am rdy!",
                            "Feed Me Token!", 0, 255, 100);
                 idle_shown = true;
             }
@@ -524,7 +524,7 @@ static void micro_ros_task(void *arg)
 
     /* 5 秒后切换到自定义欢迎消息 */
     vTaskDelay(pdMS_TO_TICKS(5000));
-    lcd_status("Hi Min Iam ready", "feed me token!", 0, 0, 255);
+    lcd_status("Hi Min I am rdy!", "Feed Me Token!", 0, 0, 255);
 
     ESP_LOGI(TAG, "执行器已启动, 等待 ROS 2 命令...");
 
