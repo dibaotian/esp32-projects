@@ -21,3 +21,6 @@ Thumbs.db
 # Managed components
 managed_components/
 dependencies.lock
+
+# micro-ROS component (cloned separately, see wifi_echo_micro_ros/README.md)
+wifi_echo_micro_ros/components/micro_ros_espidf_component/
