@@ -7,6 +7,7 @@
 - [3. ESP-IDF 安装](#3-esp-idf-安装)
 - [4. 项目一：蓝牙 SPP 回声服务器 (bt_echo)](#4-项目一蓝牙-spp-回声服务器-bt_echo)
 - [5. 项目二：WiFi AP + TCP 回声服务器 (wifi_echo)](#5-项目二wifi-ap--tcp-回声服务器-wifi_echo)
+- [5.5 项目三：micro-ROS 硬件控制节点 (wifi_echo_micro_ros)](#55-项目三micro-ros-硬件控制节点-wifi_echo_micro_ros)
 - [6. 双网络配置（有线 Internet + WiFi 控制 ESP32）](#6-双网络配置有线-internet--wifi-控制-esp32)
 - [7. 客户端工具](#7-客户端工具)
 - [8. 常用命令速查](#8-常用命令速查)
@@ -370,6 +371,55 @@ I WIFI_CTRL: 设备已就绪
 
 ---
 
+## 5.5 项目三：micro-ROS 硬件控制节点 (wifi_echo_micro_ros)
+
+用 ROS 2 micro-ROS 替代 TCP JSON 协议，ESP32 作为 ROS 2 节点（`/esp32/esp32_controller`），通过 XRCE-DDS 与 Docker micro-ROS Agent 通信。
+
+### 架构
+
+```
+Ubuntu (ROS 2 Jazzy)          ESP32 (micro-ROS)
+┌───────────────────┐          ┌──────────────────────┐
+│ ros2 topic pub/sub│◄──UDP──►│ micro-ROS Agent      │
+│                   │  8888    │ (Docker: jazzy)      │
+│ /esp32/servo_cmd  │──────►  │ servo (GPIO 18)      │
+│ /esp32/buzzer_cmd │──────►  │ buzzer (GPIO 25)     │
+│ /esp32/display_cmd│──────►  │ TM1637 (CLK17/DIO16) │
+│ /esp32/lcd_cmd    │──────►  │ Grove LCD (I2C)      │
+│ /esp32/heartbeat  │◄──────  │ uptime (5s)          │
+│ /esp32/servo_state│◄──────  │ angle feedback       │
+└───────────────────┘          └──────────────────────┘
+       WiFi Hotspot: 192.168.100.1/24 (wlp195s0)
+```
+
+### 快速启动
+
+```bash
+# 1. 启动 WiFi 热点
+sudo nmcli device wifi hotspot ifname wlp195s0 ssid "Ubuntu-ROS" password "ros2ctrl"
+
+# 2. 启动 Docker micro-ROS Agent
+docker run -d --rm --name micro-ros-agent --net=host \
+    microros/micro-ros-agent:jazzy udp4 --port 8888 -v6
+
+# 3. 编译烧录 (首次)
+cd wifi_echo_micro_ros
+source ~/esp/esp-idf/export.sh
+idf.py set-target esp32 && idf.py build flash -p /dev/ttyUSB0
+
+# 4. 测试
+source /opt/ros/jazzy/setup.bash
+ros2 topic list               # 应显示 6 个 /esp32/* 话题
+ros2 topic pub --once /esp32/servo_cmd std_msgs/msg/Float32 "{data: 90.0}"
+ros2 topic pub --once /esp32/buzzer_cmd std_msgs/msg/Int32 "{data: 3}"
+ros2 topic echo /esp32/heartbeat
+```
+
+> **重要**: micro-ROS Agent 必须使用 Docker 版本 (`microros/micro-ros-agent:jazzy`)，snap 版本不兼容。  
+> 详细说明见 [wifi_echo_micro_ros/README.md](wifi_echo_micro_ros/README.md)
+
+---
+
 ## 6. 双网络配置（有线 Internet + WiFi 控制 ESP32）
 
 ### 网络拓扑
@@ -623,7 +673,7 @@ python3 -c "import socket; s=socket.socket(); s.connect(('192.168.4.1',3333)); s
 │   └── main/
 │       ├── CMakeLists.txt
 │       └── main.c
-└── wifi_echo/                  # WiFi AP + TCP JSON 控制服务器项目
+├── wifi_echo/                  # WiFi AP + TCP JSON 控制服务器项目
     ├── CMakeLists.txt
     ├── sdkconfig.defaults
     ├── PROTOCOL.md             # JSON 通信协议文档
@@ -662,6 +712,21 @@ python3 -c "import socket; s=socket.socket(); s.connect(('192.168.4.1',3333)); s
             ├── cmd_display.c   # 数码管命令
             ├── cmd_lcd.c       # LCD 命令
             └── include/
+└── wifi_echo_micro_ros/        # micro-ROS 硬件控制节点项目
+    ├── CMakeLists.txt
+    ├── sdkconfig.defaults
+    ├── app-colcon.meta         # XRCE-DDS 实体限制配置
+    ├── README.md               # 详细使用文档
+    ├── main/
+    │   ├── CMakeLists.txt
+    │   ├── Kconfig.projbuild
+    │   └── main.c              # micro-ROS 节点 (esp32_controller)
+    └── components/
+        ├── buzzer/             # 蜂鸣器驱动
+        ├── servo/              # 舵机驱动
+        ├── tm1637/             # TM1637 数码管驱动
+        ├── grove_lcd/          # Grove LCD RGB 驱动
+        └── micro_ros_espidf_component/  # micro-ROS 库 (git clone)
 
 ~/esp/esp-idf/                  # ESP-IDF SDK (v5.4)
 ~/.espressif/                   # ESP-IDF 工具链
