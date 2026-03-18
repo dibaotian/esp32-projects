@@ -62,6 +62,24 @@
     if ((temp_rc != RCL_RET_OK)) { \
         ESP_LOGW(TAG, "Failed line %d: %d. Continuing.", __LINE__, (int)temp_rc); } }
 
+/* 实体创建带重试: WiFi UDP 上 XRCE-DDS reliable stream 偶尔超时,
+ * 重试 3 次而不是直接 abort. 每次重试前等 500ms. */
+#define RCCHECK_RETRY(fn, retries) { \
+    rcl_ret_t temp_rc; \
+    int _try; \
+    for (_try = 0; _try <= (retries); _try++) { \
+        temp_rc = fn; \
+        if (temp_rc == RCL_RET_OK) break; \
+        ESP_LOGW(TAG, "Retry %d/%d line %d: rc=%d", \
+                 _try + 1, (retries), __LINE__, (int)temp_rc); \
+        vTaskDelay(pdMS_TO_TICKS(500)); \
+    } \
+    if (temp_rc != RCL_RET_OK) { \
+        ESP_LOGE(TAG, "Failed line %d after %d retries: %d. Aborting.", \
+                 __LINE__, (retries), (int)temp_rc); \
+        vTaskDelete(NULL); \
+    } }
+
 /* ---- 硬件句柄 ---- */
 static servo_handle_t g_servo = NULL;
 static tm1637_handle_t g_tm1637 = NULL;
@@ -430,6 +448,13 @@ static void micro_ros_task(void *arg)
     ESP_LOGI(TAG, "Agent 已连接! (第 %d 次尝试)", attempt);
     lcd_status("[3/6] Agent", "Connected!", 0, 255, 80);
 
+    /* 增加实体创建超时: 默认 1000ms 在 WiFi UDP 上太短,
+     * XRCE-DDS reliable stream 重传可能需要更长时间.
+     * 设为 5000ms 给足够的重传窗口. */
+    rmw_context_t *rmw_ctx = rcl_context_get_rmw_context(&support.context);
+    rmw_uros_set_context_entity_creation_session_timeout(rmw_ctx, 5000);
+    ESP_LOGI(TAG, "Entity creation timeout set to 5000ms");
+
     /* 等待 XRCE-DDS 会话稳定 */
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -447,64 +472,64 @@ static void micro_ros_task(void *arg)
 
     /* 启动看门狗: 60 秒后如果实体创建还没完成, 自动重启 */
     TimerHandle_t wd_timer = xTimerCreate(
-        "wd_entity", pdMS_TO_TICKS(60000), pdFALSE, NULL,
+        "wd_entity", pdMS_TO_TICKS(180000), pdFALSE, NULL,
         entity_watchdog_cb);
     xTimerStart(wd_timer, 0);
     rcl_node_t node;
-    RCCHECK(rclc_node_init_default(&node, "esp32_controller", "esp32",
-                                   &support));
+    RCCHECK_RETRY(rclc_node_init_default(&node, "esp32_controller", "esp32",
+                                   &support), 3);
     ESP_LOGI(TAG, "[4/6] Entity 1/8: node created");
 
     /* ---- 发布者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_publisher_init_default(
+    RCCHECK_RETRY(rclc_publisher_init_default(
         &pub_heartbeat, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        "/esp32/heartbeat"));
+        "/esp32/heartbeat"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 2/8: pub heartbeat");
 
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_publisher_init_default(
+    RCCHECK_RETRY(rclc_publisher_init_default(
         &pub_servo_state, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-        "/esp32/servo_state"));
+        "/esp32/servo_state"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 3/8: pub servo_state");
 
     /* ---- 订阅者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_subscription_init_default(
+    RCCHECK_RETRY(rclc_subscription_init_default(
         &sub_servo_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-        "/esp32/servo_cmd"));
+        "/esp32/servo_cmd"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 4/8: sub servo_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_subscription_init_default(
+    RCCHECK_RETRY(rclc_subscription_init_default(
         &sub_buzzer_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        "/esp32/buzzer_cmd"));
+        "/esp32/buzzer_cmd"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 5/8: sub buzzer_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_subscription_init_default(
+    RCCHECK_RETRY(rclc_subscription_init_default(
         &sub_display_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        "/esp32/display_cmd"));
+        "/esp32/display_cmd"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 6/8: sub display_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
-    RCCHECK(rclc_subscription_init_default(
+    RCCHECK_RETRY(rclc_subscription_init_default(
         &sub_lcd_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-        "/esp32/lcd_cmd"));
+        "/esp32/lcd_cmd"), 3);
     ESP_LOGI(TAG, "[4/6] Entity 7/8: sub lcd_cmd");
 
     /* ---- 心跳定时器 (5 秒) ---- */
     rcl_timer_t timer;
-    RCCHECK(rclc_timer_init_default2(
+    RCCHECK_RETRY(rclc_timer_init_default2(
         &timer, &support,
         RCL_MS_TO_NS(5000),
-        heartbeat_timer_callback, true));
+        heartbeat_timer_callback, true), 3);
     ESP_LOGI(TAG, "[4/6] Entity 8/8: timer created");
 
     /* 实体创建成功, 停止看门狗 */
