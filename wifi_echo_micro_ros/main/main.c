@@ -26,6 +26,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -334,15 +335,6 @@ static void lcd_status(const char *line1, const char *line2,
     grove_lcd_print(g_lcd, line2);
 }
 
-/* 更新 LCD 第二行 (不清屏, 无 busy-wait, XRCE-DDS 安全) */
-static void lcd_line2(const char *text)
-{
-    char buf[17];
-    snprintf(buf, sizeof(buf), "%-16s", text);
-    grove_lcd_set_cursor(g_lcd, 0, 1);
-    grove_lcd_print(g_lcd, buf);
-}
-
 /* ================================================================
  *  开机动画
  * ================================================================ */
@@ -384,6 +376,9 @@ static void boot_animation(void)
 /* ================================================================
  *  micro-ROS 主任务
  * ================================================================ */
+
+/* 前向声明: 实体创建看门狗回调 (定义在文件末尾) */
+static void entity_watchdog_cb(TimerHandle_t timer);
 
 static void micro_ros_task(void *arg)
 {
@@ -438,21 +433,27 @@ static void micro_ros_task(void *arg)
     /* 等待 XRCE-DDS 会话稳定 */
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    /* 创建节点: /esp32/esp32_controller
-     * 注意: 实体创建期间不能调用 lcd_status (grove_lcd_clear 有 2ms busy-wait,
-     * 会阻塞 XRCE-DDS 会话维护导致实体创建失败).
-     * LCD 只在整个创建块之前/之后更新. */
+    /* ================================================================
+     * 实体创建阶段
+     *
+     * 注意事项:
+     * 1) 绝对不碰 LCD (I2C 写入≈3ms 阻塞 XRCE-DDS 会话维护)
+     * 2) 不碰 TM1637 (GPIO bit-bang 关中断可能影响 WiFi 收包)
+     * 3) 每个实体创建之间只做 vTaskDelay + ESP_LOGI
+     * 4) 看门狗: 60 秒超时自动重启 (防止 UDP 丢包导致卡死)
+     * ================================================================ */
     lcd_status("[4/6] ROS2", "Creating 0/8...", 0, 150, 255);
     vTaskDelay(pdMS_TO_TICKS(100));  /* 让 LCD I2C 完成 */
 
-    /* 实体创建期间绝对不能碰 LCD (I2C 写16字符≈3ms, 和 clear 一样阻塞
-     * XRCE-DDS 会话维护). 改用 TM1637 数码管显示计数 (GPIO bit-bang, 快).
-     * LCD 只在整个创建块之前/之后更新. */
+    /* 启动看门狗: 60 秒后如果实体创建还没完成, 自动重启 */
+    TimerHandle_t wd_timer = xTimerCreate(
+        "wd_entity", pdMS_TO_TICKS(60000), pdFALSE, NULL,
+        entity_watchdog_cb);
+    xTimerStart(wd_timer, 0);
     rcl_node_t node;
     RCCHECK(rclc_node_init_default(&node, "esp32_controller", "esp32",
                                    &support));
-    ESP_LOGI(TAG, "micro-ROS 节点已创建");
-    tm1637_show_number(g_tm1637, 1, false);  /* 1/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 1/8: node created");
 
     /* ---- 发布者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -460,14 +461,14 @@ static void micro_ros_task(void *arg)
         &pub_heartbeat, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/heartbeat"));
-    tm1637_show_number(g_tm1637, 2, false);  /* 2/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 2/8: pub heartbeat");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_publisher_init_default(
         &pub_servo_state, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_state"));
-    tm1637_show_number(g_tm1637, 3, false);  /* 3/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 3/8: pub servo_state");
 
     /* ---- 订阅者 ---- */
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -475,28 +476,28 @@ static void micro_ros_task(void *arg)
         &sub_servo_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/esp32/servo_cmd"));
-    tm1637_show_number(g_tm1637, 4, false);  /* 4/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 4/8: sub servo_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_buzzer_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/buzzer_cmd"));
-    tm1637_show_number(g_tm1637, 5, false);  /* 5/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 5/8: sub buzzer_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_display_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
         "/esp32/display_cmd"));
-    tm1637_show_number(g_tm1637, 6, false);  /* 6/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 6/8: sub display_cmd");
 
     vTaskDelay(pdMS_TO_TICKS(200));
     RCCHECK(rclc_subscription_init_default(
         &sub_lcd_cmd, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
         "/esp32/lcd_cmd"));
-    tm1637_show_number(g_tm1637, 7, false);  /* 7/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 7/8: sub lcd_cmd");
 
     /* ---- 心跳定时器 (5 秒) ---- */
     rcl_timer_t timer;
@@ -504,7 +505,12 @@ static void micro_ros_task(void *arg)
         &timer, &support,
         RCL_MS_TO_NS(5000),
         heartbeat_timer_callback, true));
-    tm1637_show_number(g_tm1637, 8, false);  /* 8/8 */
+    ESP_LOGI(TAG, "[4/6] Entity 8/8: timer created");
+
+    /* 实体创建成功, 停止看门狗 */
+    xTimerStop(wd_timer, 0);
+    xTimerDelete(wd_timer, 0);
+    ESP_LOGI(TAG, "[4/6] All entities created, watchdog stopped");
 
     /* 预分配 lcd_cmd String 缓冲 (避免动态内存) */
     msg_lcd_cmd.data.data = lcd_cmd_buf;
@@ -623,4 +629,20 @@ void app_main(void)
                 NULL,
                 CONFIG_MICRO_ROS_APP_TASK_PRIO,
                 NULL);
+}
+
+/* ================================================================
+ *  实体创建看门狗: 60 秒超时自动重启
+ * ================================================================ */
+static void entity_watchdog_cb(TimerHandle_t timer)
+{
+    ESP_LOGE(TAG, "Entity creation watchdog timeout! Rebooting...");
+    grove_lcd_clear(g_lcd);
+    grove_lcd_set_rgb(g_lcd, 255, 0, 0);
+    grove_lcd_set_cursor(g_lcd, 0, 0);
+    grove_lcd_print(g_lcd, "WATCHDOG REBOOT");
+    grove_lcd_set_cursor(g_lcd, 0, 1);
+    grove_lcd_print(g_lcd, "Entity timeout!");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
 }
